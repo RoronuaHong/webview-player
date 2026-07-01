@@ -107,11 +107,13 @@ export default function FeedPlayer({
   const isImmersiveRef = useRef(false);
   const [immersiveOrientation, setImmersiveOrientation] =
     useState<VideoOrientation>("portrait");
+  const immersiveOrientationRef = useRef<VideoOrientation>("portrait");
 
   translateIndexRef.current = translateIndex;
   itemsRef.current = items;
   activeIndexRef.current = activeIndex;
   isImmersiveRef.current = isImmersive;
+  immersiveOrientationRef.current = immersiveOrientation;
 
   items.forEach((item) => {
     if (item.definitions?.length) {
@@ -144,18 +146,36 @@ export default function FeedPlayer({
 
     setTransitionEnabled(false);
     const idx = translateIndexRef.current;
-    if (trackRef.current) {
-      trackRef.current.style.transform = `translate3d(0, calc(-${idx} * 100dvh), 0)`;
-      void trackRef.current.offsetHeight;
+    const wasLandscape = immersiveOrientationRef.current === "landscape";
+
+    const snapTrack = () => {
+      if (trackRef.current) {
+        trackRef.current.style.transform = `translate3d(0, calc(-${idx} * 100dvh), 0)`;
+        void trackRef.current.offsetHeight;
+      }
+    };
+
+    const finishExit = () => {
+      setIsImmersive(false);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTransitionEnabled(true);
+        });
+      });
+    };
+
+    if (wasLandscape) {
+      // Drop landscape layout first (restores track translate) while overlay stays.
+      setImmersiveOrientation("portrait");
+      requestAnimationFrame(() => {
+        snapTrack();
+        requestAnimationFrame(finishExit);
+      });
+      return;
     }
 
-    setIsImmersive(false);
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        setTransitionEnabled(true);
-      });
-    });
+    snapTrack();
+    finishExit();
   }, []);
 
   const saveProgressByIndex = useCallback((index: number, immediate = true) => {
@@ -671,6 +691,17 @@ export default function FeedPlayer({
     [],
   );
 
+  const syncImmersiveViewportMetrics = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const vv = window.visualViewport;
+    const w = vv?.width ?? window.innerWidth;
+    const h = vv?.height ?? window.innerHeight;
+    viewport.style.setProperty("--immersive-vw", `${w}px`);
+    viewport.style.setProperty("--immersive-vh", `${h}px`);
+  }, []);
+
   const toggleImmersive = useCallback(() => {
     if (isImmersiveRef.current) {
       exitImmersive();
@@ -678,11 +709,30 @@ export default function FeedPlayer({
     }
 
     const player = getActivePlayer();
+    const orientation = player
+      ? readPlayerVideoOrientation(player)
+      : immersiveOrientationRef.current;
+
     if (player) {
-      setImmersiveOrientation(readPlayerVideoOrientation(player));
+      setImmersiveOrientation(orientation);
     }
+
+    setTransitionEnabled(false);
     setIsImmersive(true);
-  }, [exitImmersive]);
+    syncImmersiveViewportMetrics();
+
+    const resizePlayer = () => {
+      getActivePlayer()?.resize?.();
+    };
+
+    requestAnimationFrame(() => {
+      resizePlayer();
+      requestAnimationFrame(() => {
+        resizePlayer();
+        setTransitionEnabled(true);
+      });
+    });
+  }, [exitImmersive, syncImmersiveViewportMetrics]);
 
   useEffect(() => {
     const player = getActivePlayer();
@@ -692,6 +742,7 @@ export default function FeedPlayer({
 
   useEffect(() => {
     const resizeActivePlayer = () => {
+      syncImmersiveViewportMetrics();
       const player = getActivePlayer();
       player?.resize?.();
     };
@@ -707,7 +758,7 @@ export default function FeedPlayer({
       window.visualViewport?.removeEventListener("resize", resizeActivePlayer);
       window.visualViewport?.removeEventListener("scroll", resizeActivePlayer);
     };
-  }, [isImmersive, translateIndex, activeIndex]);
+  }, [isImmersive, translateIndex, activeIndex, immersiveOrientation, syncImmersiveViewportMetrics]);
 
   useFeedViewportGestures({
     enabled: items.length > 0,
@@ -740,7 +791,10 @@ export default function FeedPlayer({
       ? "feed-immersive--landscape"
       : "feed-immersive--portrait";
 
-  const trackTransform = `translate3d(0, calc(-${translateIndex} * 100dvh), 0)`;
+  const trackTransform =
+    isImmersive && immersiveOrientation === "landscape"
+      ? "none"
+      : `translate3d(0, calc(-${translateIndex} * 100dvh), 0)`;
 
   return (
     <div
