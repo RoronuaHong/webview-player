@@ -62,10 +62,6 @@ html {
   overscroll-behavior: none;
 }
 
-.feed-swipe-layer {
-  touch-action: none;
-}
-
 .feed-immersive {
   position: fixed;
   inset: 0;
@@ -95,13 +91,6 @@ html {
 
 .feed-immersive--portrait .portrait-player .xgplayer-video {
   object-fit: contain !important;
-}
-
-.feed-immersive--landscape .feed-track {
-  transform: none !important;
-  transition: none !important;
-  width: 100%;
-  height: 100%;
 }
 
 .feed-immersive--landscape .feed-card:not([data-active="true"]) {

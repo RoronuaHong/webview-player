@@ -73,6 +73,8 @@ class PlaybackStore {
       updatedAt: Date.now(),
       wasPlaying: partial.wasPlaying ?? prev?.wasPlaying,
       completed: partial.completed ?? prev?.completed,
+      playbackRate: partial.playbackRate ?? prev?.playbackRate,
+      definition: partial.definition ?? prev?.definition,
     };
 
     if (

@@ -104,12 +104,14 @@ export default function FeedPlayer({
   );
   const [transitionEnabled, setTransitionEnabled] = useState(true);
   const [isImmersive, setIsImmersive] = useState(false);
+  const isImmersiveRef = useRef(false);
   const [immersiveOrientation, setImmersiveOrientation] =
     useState<VideoOrientation>("portrait");
 
   translateIndexRef.current = translateIndex;
   itemsRef.current = items;
   activeIndexRef.current = activeIndex;
+  isImmersiveRef.current = isImmersive;
 
   items.forEach((item) => {
     if (item.definitions?.length) {
@@ -136,6 +138,25 @@ export default function FeedPlayer({
     if (!videoId) return [];
     return definitionsRef.current.get(videoId) ?? [];
   };
+
+  const exitImmersive = useCallback(() => {
+    if (!isImmersiveRef.current) return;
+
+    setTransitionEnabled(false);
+    const idx = translateIndexRef.current;
+    if (trackRef.current) {
+      trackRef.current.style.transform = `translate3d(0, calc(-${idx} * 100dvh), 0)`;
+      void trackRef.current.offsetHeight;
+    }
+
+    setIsImmersive(false);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTransitionEnabled(true);
+      });
+    });
+  }, []);
 
   const saveProgressByIndex = useCallback((index: number, immediate = true) => {
     const item = itemsRef.current[index];
@@ -310,7 +331,7 @@ export default function FeedPlayer({
 
       switchingRef.current = true;
       saveProgressByIndex(prevRealIndex, true);
-      setIsImmersive(false);
+      exitImmersive();
 
       if (options?.loopWrap) {
         pendingSnapRef.current = nextTranslateIndex === 0 ? "head" : "tail";
@@ -361,6 +382,7 @@ export default function FeedPlayer({
       loop,
       saveProgressByIndex,
       scheduleSwitchFallback,
+      exitImmersive,
     ],
   );
 
@@ -624,6 +646,17 @@ export default function FeedPlayer({
     [],
   );
 
+  const handlePlaybackError = useCallback(
+    (videoId: string, index: number, error: unknown) => {
+      bridgeRef.current?.emit("error", {
+        videoId,
+        index,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    },
+    [],
+  );
+
   const goNextRef = useRef(goNext);
   goNextRef.current = goNext;
 
@@ -639,17 +672,17 @@ export default function FeedPlayer({
   );
 
   const toggleImmersive = useCallback(() => {
-    setIsImmersive((prev) => {
-      const next = !prev;
-      if (next) {
-        const player = getActivePlayer();
-        if (player) {
-          setImmersiveOrientation(readPlayerVideoOrientation(player));
-        }
-      }
-      return next;
-    });
-  }, []);
+    if (isImmersiveRef.current) {
+      exitImmersive();
+      return;
+    }
+
+    const player = getActivePlayer();
+    if (player) {
+      setImmersiveOrientation(readPlayerVideoOrientation(player));
+    }
+    setIsImmersive(true);
+  }, [exitImmersive]);
 
   useEffect(() => {
     const player = getActivePlayer();
@@ -707,10 +740,7 @@ export default function FeedPlayer({
       ? "feed-immersive--landscape"
       : "feed-immersive--portrait";
 
-  const trackTransform =
-    isImmersive && immersiveOrientation === "landscape"
-      ? "none"
-      : `translate3d(0, calc(-${translateIndex} * 100dvh), 0)`;
+  const trackTransform = `translate3d(0, calc(-${translateIndex} * 100dvh), 0)`;
 
   return (
     <div
@@ -763,6 +793,9 @@ export default function FeedPlayer({
                 }
                 onDefinitionChange={(definition) =>
                   handleDefinitionChange(item.id, item.realIndex, definition)
+                }
+                onPlaybackError={(error) =>
+                  handlePlaybackError(item.id, item.realIndex, error)
                 }
               />
 
