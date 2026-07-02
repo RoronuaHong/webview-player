@@ -85,6 +85,7 @@ export class PlayerBridge {
   private pending = new Map<string, PendingRequest>();
   private bridgeName: string;
   private requestCounter = 0;
+  private ownerId: string | null = null;
 
   constructor(bridgeName = "WebViewBridge") {
     this.bridgeName = bridgeName;
@@ -98,7 +99,9 @@ export class PlayerBridge {
     this.handlers.delete(method);
   }
 
-  mount() {
+  mount(ownerId?: string) {
+    this.ownerId = ownerId ?? "default";
+
     window.WebPlayerBridge = {
       invoke: (method, data, requestId) => {
         void this.handleInvoke({ method, data, requestId });
@@ -109,7 +112,9 @@ export class PlayerBridge {
     window.addEventListener("message", this.onWindowMessage);
   }
 
-  unmount() {
+  unmount(ownerId?: string) {
+    if (ownerId && this.ownerId !== ownerId) return;
+
     window.removeEventListener("message", this.onWindowMessage);
     this.pending.forEach((pending) => {
       clearTimeout(pending.timer);
@@ -120,6 +125,7 @@ export class PlayerBridge {
     if (window.WebPlayerBridge) {
       delete window.WebPlayerBridge;
     }
+    this.ownerId = null;
   }
 
   createRequestId(prefix = "h5") {

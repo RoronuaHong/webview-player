@@ -8,6 +8,11 @@ type LifecycleListener = (event: {
   shouldResume: boolean;
 }) => void;
 
+type LifecycleFlushListener = (event: {
+  reason: InterruptReason;
+  records: ReturnType<typeof playbackStore.exportAll>;
+}) => void;
+
 const LIFECYCLE_BRIDGE_METHODS = [
   "onAppPause",
   "onAppResume",
@@ -19,9 +24,11 @@ const LIFECYCLE_BRIDGE_METHODS = [
 
 class LifecycleManager {
   private listeners = new Set<LifecycleListener>();
+  private flushListeners = new Set<LifecycleFlushListener>();
   private phase: LifecyclePhase = "active";
   private wasPlaying = false;
   private mounted = false;
+  private ownerId: string | null = null;
   private bridge: PlayerBridge | null = null;
   private lastForegroundAt = 0;
 
@@ -46,9 +53,19 @@ class LifecycleManager {
     };
   }
 
-  mount(bridge?: PlayerBridge) {
+  onFlush(listener: LifecycleFlushListener) {
+    this.flushListeners.add(listener);
+    return () => {
+      this.flushListeners.delete(listener);
+    };
+  }
+
+  mount(bridge?: PlayerBridge, ownerId?: string) {
+    const nextOwnerId = ownerId ?? "default";
+    if (this.mounted && this.ownerId !== nextOwnerId) return;
     if (this.mounted || typeof window === "undefined") return;
     this.mounted = true;
+    this.ownerId = nextOwnerId;
     this.bridge = bridge ?? null;
 
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -99,9 +116,11 @@ class LifecycleManager {
     });
   }
 
-  unmount() {
+  unmount(ownerId?: string) {
     if (!this.mounted) return;
+    if (ownerId && this.ownerId !== ownerId) return;
     this.mounted = false;
+    this.ownerId = null;
 
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
     window.removeEventListener("pagehide", this.onPageHide);
@@ -129,11 +148,10 @@ class LifecycleManager {
 
   flush(reason: InterruptReason = "page_hide") {
     const records = playbackStore.flush();
-    this.bridge?.emit("progress_saved", {
-      reason,
-      records,
-      phase: this.phase,
+    this.flushListeners.forEach((listener) => {
+      listener({ reason, records });
     });
+    return records;
   }
 
   private onVisibilityChange = () => {

@@ -126,7 +126,32 @@ export function normalizeMediaUrl(url: string) {
   }
 }
 
-export function feedItemMatchesUrl(item: FeedItem, targetUrl: string) {
+function normalizeExactMediaUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+
+  try {
+    const parsed = new URL(trimmed, "https://feed.local");
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
+function feedItemMatchesUrlExact(item: FeedItem, targetUrl: string) {
+  const target = normalizeExactMediaUrl(targetUrl);
+  if (!target) return false;
+
+  if (normalizeExactMediaUrl(item.url) === target) return true;
+
+  return (
+    item.definitions?.some(
+      (definition) => normalizeExactMediaUrl(definition.url) === target,
+    ) ?? false
+  );
+}
+
+function feedItemMatchesUrlPath(item: FeedItem, targetUrl: string) {
   const target = normalizeMediaUrl(targetUrl);
   if (!target) return false;
 
@@ -136,6 +161,13 @@ export function feedItemMatchesUrl(item: FeedItem, targetUrl: string) {
     item.definitions?.some(
       (definition) => normalizeMediaUrl(definition.url) === target,
     ) ?? false
+  );
+}
+
+export function feedItemMatchesUrl(item: FeedItem, targetUrl: string) {
+  return (
+    feedItemMatchesUrlExact(item, targetUrl) ||
+    feedItemMatchesUrlPath(item, targetUrl)
   );
 }
 
@@ -151,29 +183,15 @@ export function findFeedItemIndex(
 
   const url = options.url?.trim();
   if (url) {
-    return items.findIndex((item) => feedItemMatchesUrl(item, url));
+    const byExact = items.findIndex((item) =>
+      feedItemMatchesUrlExact(item, url),
+    );
+    if (byExact >= 0) return byExact;
+
+    return items.findIndex((item) => feedItemMatchesUrlPath(item, url));
   }
 
   return -1;
-}
-
-export function hasExplicitFeedPosition(options: {
-  index?: string | null;
-  videoId?: string | null;
-  url?: string | null;
-}) {
-  if (
-    options.index !== null &&
-    options.index !== undefined &&
-    options.index !== ""
-  ) {
-    return true;
-  }
-
-  if (options.videoId?.trim()) return true;
-  if (options.url?.trim()) return true;
-
-  return false;
 }
 
 export function resolveSavedFeedIndex(items: FeedItem[]) {

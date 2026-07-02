@@ -277,7 +277,6 @@ export default function XgPlayer({
         reportProgress(false, true);
         instance.pause();
       }
-      lifecycleManager.notifySystemPause();
     };
 
     instance.on(Events.PLAY, onPlay);
