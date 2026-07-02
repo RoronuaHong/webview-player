@@ -1,6 +1,5 @@
 import type { FeedItem, VideoDefinition } from "@/types/feed";
 import { resolveVideoId } from "@/lib/playback-store";
-import { isHlsUrl } from "@/lib/player-utils";
 
 export {
   PORTRAIT_VIDEO_1080_URL,
@@ -101,10 +100,6 @@ export function parseFeedFromSearchParams(
   }
 
   return defaultItems;
-}
-
-export function shouldAutoplayLive(url: string, isLive: boolean): boolean {
-  return isLive || isHlsUrl(url);
 }
 
 export function toXgDefinitionList(definitions: VideoDefinition[]) {

@@ -1,3 +1,6 @@
+import type Player from "xgplayer";
+import { findPlayerVideoElement } from "@/lib/webview-playback";
+
 export type VideoOrientation = "portrait" | "landscape" | "square";
 
 const LANDSCAPE_RATIO = 1.05;
@@ -7,7 +10,12 @@ export function getVideoOrientation(
   width: number,
   height: number,
 ): VideoOrientation {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
     return "portrait";
   }
 
@@ -17,25 +25,6 @@ export function getVideoOrientation(
   return "square";
 }
 
-function getVideoElement(player: {
-  media?: unknown;
-  root?: HTMLElement | null;
-}): HTMLVideoElement | null {
-  const media = player.media;
-  if (media instanceof HTMLVideoElement) {
-    return media;
-  }
-
-  if (player.root) {
-    const video = player.root.querySelector("video");
-    if (video instanceof HTMLVideoElement) {
-      return video;
-    }
-  }
-
-  return null;
-}
-
 export function readPlayerVideoOrientation(player: unknown): VideoOrientation {
   const source = player as {
     media?: unknown;
@@ -43,7 +32,8 @@ export function readPlayerVideoOrientation(player: unknown): VideoOrientation {
     _videoWidth?: number;
     _videoHeight?: number;
   };
-  const video = getVideoElement(source);
+
+  const video = findPlayerVideoElement(player as Player);
   if (video?.videoWidth && video.videoHeight) {
     return getVideoOrientation(video.videoWidth, video.videoHeight);
   }

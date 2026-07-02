@@ -14,18 +14,3 @@ export function stopPointerPropagation(
 ) {
   event.stopPropagation();
 }
-
-export function safeReleasePointerCapture(
-  element: Element | null,
-  pointerId: number,
-) {
-  if (!element?.releasePointerCapture) return;
-
-  try {
-    if (element.hasPointerCapture?.(pointerId)) {
-      element.releasePointerCapture(pointerId);
-    }
-  } catch {
-    // Pointer may already be released by the browser or DevTools.
-  }
-}

@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type Player from "xgplayer";
-import { Events } from "xgplayer";
 import { formatTime } from "@/lib/player-utils";
+import { changePlayerDefinition } from "@/lib/player-definition";
 import { stopPointerPropagation } from "@/lib/pointer-utils";
 import { playerSettings } from "@/lib/player-settings";
 import { safePlayerPlay } from "@/lib/webview-playback";
@@ -14,7 +14,7 @@ type CustomControlsProps = {
   player: Player | null;
   visible?: boolean;
   isImmersive?: boolean;
-  onToggleImmersive?: () => void;
+  onToggleImmersive: () => void;
   definitions?: VideoDefinition[];
   currentDefinition?: string;
   onDefinitionChange?: (definition: VideoDefinition) => void;
@@ -36,7 +36,6 @@ export default function CustomControls({
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
   const [showUi, setShowUi] = useState(true);
-  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
   const [panel, setPanel] = useState<"none" | "rate" | "quality">("none");
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -53,11 +52,6 @@ export default function CustomControls({
     }, 3000);
   }, [panel, playing]);
 
-  const usesImmersiveFullscreen = Boolean(onToggleImmersive);
-  const isFullscreen = usesImmersiveFullscreen
-    ? isImmersive
-    : isNativeFullscreen;
-
   useEffect(() => {
     if (!player) return;
 
@@ -65,9 +59,6 @@ export default function CustomControls({
       setPlaying(!player.paused);
       setCurrentTime(player.currentTime ?? 0);
       setDuration(player.duration ?? 0);
-      if (!usesImmersiveFullscreen) {
-        setIsNativeFullscreen(Boolean(player.cssfullscreen));
-      }
 
       const media = player.media;
       if (media && "buffered" in media) {
@@ -91,12 +82,6 @@ export default function CustomControls({
       setPlaying(false);
       setShowUi(true);
     };
-    const onFullscreenChange = () => {
-      if (!usesImmersiveFullscreen) {
-        setIsNativeFullscreen(Boolean(player.cssfullscreen));
-      }
-      resetHideTimer();
-    };
 
     player.on("play", onPlay);
     player.on("pause", onPause);
@@ -108,7 +93,6 @@ export default function CustomControls({
     player.on("ready", syncState);
     player.on("ratechange", syncState);
     player.on("definition_change", syncState);
-    player.on(Events.CSS_FULLSCREEN_CHANGE, onFullscreenChange);
 
     syncState();
 
@@ -123,9 +107,8 @@ export default function CustomControls({
       player.off("ready", syncState);
       player.off("ratechange", syncState);
       player.off("definition_change", syncState);
-      player.off(Events.CSS_FULLSCREEN_CHANGE, onFullscreenChange);
     };
-  }, [player, resetHideTimer, usesImmersiveFullscreen]);
+  }, [player, resetHideTimer]);
 
   useEffect(() => {
     return () => {
@@ -145,16 +128,7 @@ export default function CustomControls({
 
   const toggleFullscreen = () => {
     resetHideTimer();
-    if (onToggleImmersive) {
-      onToggleImmersive();
-      return;
-    }
-    if (!player) return;
-    if (player.cssfullscreen) {
-      player.exitCssFullscreen();
-      return;
-    }
-    player.getCssFullscreen();
+    onToggleImmersive();
   };
 
   const onSeek = (value: number) => {
@@ -176,24 +150,7 @@ export default function CustomControls({
 
   const applyDefinition = (definition: VideoDefinition) => {
     if (!player) return;
-    const current = player.currentTime ?? 0;
-    const wasPlaying = !player.paused;
-
-    player.changeDefinition({
-      definition: definition.definition,
-      url: definition.url,
-      text: definition.text ?? definition.definition,
-    });
-
-    player.once("canplay", () => {
-      if (current > 0) {
-        player.currentTime = current;
-      }
-      if (wasPlaying) {
-        void safePlayerPlay(player);
-      }
-    });
-
+    changePlayerDefinition(player, definition);
     onDefinitionChange?.(definition);
     setPanel("none");
     resetHideTimer();
@@ -365,9 +322,9 @@ export default function CustomControls({
                 type="button"
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-white"
                 onClick={toggleFullscreen}
-                aria-label={isFullscreen ? "退出全屏" : "全屏"}
+                aria-label={isImmersive ? "退出全屏" : "全屏"}
               >
-                {isFullscreen ? (
+                {isImmersive ? (
                   <svg viewBox="0 0 24 24" className="h-4 w-4 fill-current" aria-hidden>
                     <path d="M5 16h3v3H3v-5h2v2zm3-8H5V5H3v5h2V8zm8 8h3v2h-5v-3h2v1zM16 5v2h-2V5h-3V3h5v2z" />
                   </svg>

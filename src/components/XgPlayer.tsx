@@ -29,15 +29,6 @@ export type XgPlayerProps = {
   startTime?: number;
   definitions?: VideoDefinition[];
   defaultDefinition?: string;
-  onProgress?: (payload: {
-    videoId: string;
-    url: string;
-    currentTime: number;
-    duration: number;
-    wasPlaying: boolean;
-    playbackRate?: number;
-    definition?: string;
-  }) => void;
   onPlayerInstance?: (videoId: string, player: Player | null) => void;
   onPlaybackRateChange?: (rate: PlaybackRate) => void;
   onDefinitionChange?: (definition: VideoDefinition) => void;
@@ -73,7 +64,6 @@ export default function XgPlayer({
   startTime = 0,
   definitions = [],
   defaultDefinition,
-  onProgress,
   onPlayerInstance,
   onPlaybackRateChange,
   onDefinitionChange,
@@ -86,7 +76,6 @@ export default function XgPlayer({
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
   const activeRef = useRef(active);
-  const onProgressRef = useRef(onProgress);
   const onEndedRef = useRef(onEnded);
   const onPlayerInstanceRef = useRef(onPlayerInstance);
   const onPlaybackRateChangeRef = useRef(onPlaybackRateChange);
@@ -103,7 +92,6 @@ export default function XgPlayer({
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   activeRef.current = active;
-  onProgressRef.current = onProgress;
   onEndedRef.current = onEnded;
   onPlayerInstanceRef.current = onPlayerInstance;
   onPlaybackRateChangeRef.current = onPlaybackRateChange;
@@ -123,16 +111,6 @@ export default function XgPlayer({
   const reportProgress = (wasPlaying: boolean, immediate = false) => {
     const instance = playerRef.current;
     if (!instance) return;
-
-    onProgressRef.current?.({
-      videoId,
-      url: String(instance.config?.url ?? url),
-      currentTime: instance.currentTime ?? 0,
-      duration: instance.duration ?? 0,
-      wasPlaying,
-      playbackRate: instance.playbackRate,
-      definition: currentDefinitionRef.current,
-    });
 
     playbackStore.update(
       {
@@ -188,7 +166,7 @@ export default function XgPlayer({
       lang: "zh-cn",
       videoFillMode: "contain",
       rotate: false,
-      cssFullscreen: true,
+      cssFullscreen: false,
       closeVideoClick: false,
       startTime: savedStartTime,
       defaultPlaybackRate: initialRate,
@@ -201,9 +179,6 @@ export default function XgPlayer({
           : undefined,
       ignores: [...HIDDEN_CONTROLS],
       videoAttributes: { ...getWebViewVideoAttributes() },
-      "x5-video-player-type": "h5",
-      "x5-video-orientation": "portrait",
-      "x5-video-player-fullscreen": "false",
     });
 
     instance.playbackRate = initialRate;
@@ -397,16 +372,14 @@ export default function XgPlayer({
   };
 
   return (
-    <div
-      className={`portrait-player relative h-full w-full bg-black${isImmersive ? " portrait-player--immersive" : ""}`}
-    >
+    <div className="portrait-player relative h-full w-full bg-black">
       <div ref={containerRef} className="xgplayer-host h-full w-full" />
 
       <CustomControls
         player={player}
         visible={active}
         isImmersive={isImmersive}
-        onToggleImmersive={onToggleImmersive}
+        onToggleImmersive={onToggleImmersive ?? (() => {})}
         definitions={definitions}
         currentDefinition={currentDefinition}
         onPlaybackRateChange={handlePlaybackRateChange}

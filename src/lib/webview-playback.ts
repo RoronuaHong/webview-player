@@ -1,20 +1,6 @@
 import type Player from "xgplayer";
 import { lifecycleManager } from "@/lib/lifecycle-manager";
 
-export function isIosDevice(): boolean {
-  if (typeof navigator === "undefined") return false;
-
-  return (
-    /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
-}
-
-export function isAndroidDevice(): boolean {
-  if (typeof navigator === "undefined") return false;
-  return /Android/i.test(navigator.userAgent);
-}
-
 /** Attributes recommended by xgplayer + WKWebView / Android WebView docs */
 export function getWebViewVideoAttributes() {
   return {
@@ -65,10 +51,7 @@ export async function safePlayerPlay(
 ): Promise<boolean> {
   if (!player) return false;
 
-  if (
-    !options?.ignoreLifecycle &&
-    typeof document !== "undefined"
-  ) {
+  if (!options?.ignoreLifecycle && typeof document !== "undefined") {
     if (document.visibilityState !== "visible") return false;
     if (lifecycleManager.getPhase() !== "active") return false;
   }

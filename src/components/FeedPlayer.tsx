@@ -4,9 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type Player from "xgplayer";
 import XgPlayer from "@/components/XgPlayer";
 import { useFeedViewportGestures } from "@/hooks/useFeedViewportGestures";
-import { PlayerBridge } from "@/lib/jsbridge";
+import {
+  buildDisplayItems,
+  FEED_TRANSITION_MS,
+  getFeedTrackTransform,
+  snapTrackElement,
+  toRealIndex,
+  toTranslateIndex,
+} from "@/lib/feed-carousel";
 import { findDefinition, toXgDefinitionList } from "@/lib/feed-utils";
+import {
+  runAfterDoubleFrame,
+  syncImmersiveViewportMetrics,
+} from "@/lib/immersive-viewport";
+import { PlayerBridge } from "@/lib/jsbridge";
 import { lifecycleManager } from "@/lib/lifecycle-manager";
+import { changePlayerDefinition } from "@/lib/player-definition";
 import { playbackStore } from "@/lib/playback-store";
 import { playerSettings } from "@/lib/player-settings";
 import { readPlayerVideoOrientation, type VideoOrientation } from "@/lib/video-orientation";
@@ -19,55 +32,6 @@ type FeedPlayerProps = {
   isLive?: boolean;
   bridgeName?: string;
 };
-
-type DisplayFeedItem = FeedItem & {
-  displayKey: string;
-  realIndex: number;
-};
-
-const TRANSITION_MS = 280;
-
-function buildDisplayItems(items: FeedItem[]): DisplayFeedItem[] {
-  if (items.length <= 1) {
-    return items.map((item, index) => ({
-      ...item,
-      displayKey: item.id,
-      realIndex: index,
-    }));
-  }
-
-  const last = items[items.length - 1];
-  const first = items[0];
-
-  return [
-    {
-      ...last,
-      displayKey: `${last.id}__clone-head`,
-      realIndex: items.length - 1,
-    },
-    ...items.map((item, index) => ({
-      ...item,
-      displayKey: item.id,
-      realIndex: index,
-    })),
-    {
-      ...first,
-      displayKey: `${first.id}__clone-tail`,
-      realIndex: 0,
-    },
-  ];
-}
-
-function toTranslateIndex(realIndex: number, loop: boolean) {
-  return loop ? realIndex + 1 : realIndex;
-}
-
-function toRealIndex(translateIndex: number, length: number, loop: boolean) {
-  if (!loop || length <= 1) return translateIndex;
-  if (translateIndex === 0) return length - 1;
-  if (translateIndex === length + 1) return 0;
-  return translateIndex - 1;
-}
 
 export default function FeedPlayer({
   items,
@@ -148,34 +112,29 @@ export default function FeedPlayer({
     const idx = translateIndexRef.current;
     const wasLandscape = immersiveOrientationRef.current === "landscape";
 
-    const snapTrack = () => {
-      if (trackRef.current) {
-        trackRef.current.style.transform = `translate3d(0, calc(-${idx} * 100dvh), 0)`;
-        void trackRef.current.offsetHeight;
-      }
-    };
-
     const finishExit = () => {
       setIsImmersive(false);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setTransitionEnabled(true);
-        });
+      runAfterDoubleFrame(() => {
+        setTransitionEnabled(true);
       });
     };
 
     if (wasLandscape) {
-      // Drop landscape layout first (restores track translate) while overlay stays.
       setImmersiveOrientation("portrait");
       requestAnimationFrame(() => {
-        snapTrack();
+        snapTrackElement(trackRef.current, idx);
         requestAnimationFrame(finishExit);
       });
       return;
     }
 
-    snapTrack();
+    snapTrackElement(trackRef.current, idx);
     finishExit();
+  }, []);
+
+  const refreshActivePlayerLayout = useCallback(() => {
+    syncImmersiveViewportMetrics(viewportRef.current);
+    getActivePlayer()?.resize?.();
   }, []);
 
   const saveProgressByIndex = useCallback((index: number, immediate = true) => {
@@ -287,7 +246,7 @@ export default function FeedPlayer({
       }
 
       finishSwitch();
-    }, TRANSITION_MS + 80);
+    }, FEED_TRANSITION_MS + 80);
   }, [completeLoopSnap, finishSwitch]);
 
   const switchDefinition = (
@@ -302,23 +261,7 @@ export default function FeedPlayer({
       throw new Error("Definition not found");
     }
 
-    const current = player.currentTime ?? 0;
-    const wasPlaying = !player.paused;
-
-    player.changeDefinition({
-      definition: target.definition,
-      url: target.url,
-      text: target.text ?? target.definition,
-    });
-
-    player.once("canplay", () => {
-      if (current > 0) {
-        player.currentTime = current;
-      }
-      if (wasPlaying) {
-        void safePlayerPlay(player);
-      }
-    });
+    changePlayerDefinition(player, target);
 
     bridgeRef.current?.emit("definition_change", {
       videoId: item.id,
@@ -388,11 +331,6 @@ export default function FeedPlayer({
           setActiveIndex(nextRealIndex);
           emitSlideChange(nextRealIndex, prevRealIndex, false);
         }
-      }
-
-      if (!loop) {
-        scheduleSwitchFallback();
-        return;
       }
 
       scheduleSwitchFallback();
@@ -691,17 +629,6 @@ export default function FeedPlayer({
     [],
   );
 
-  const syncImmersiveViewportMetrics = useCallback(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-
-    const vv = window.visualViewport;
-    const w = vv?.width ?? window.innerWidth;
-    const h = vv?.height ?? window.innerHeight;
-    viewport.style.setProperty("--immersive-vw", `${w}px`);
-    viewport.style.setProperty("--immersive-vh", `${h}px`);
-  }, []);
-
   const toggleImmersive = useCallback(() => {
     if (isImmersiveRef.current) {
       exitImmersive();
@@ -709,56 +636,45 @@ export default function FeedPlayer({
     }
 
     const player = getActivePlayer();
-    const orientation = player
-      ? readPlayerVideoOrientation(player)
-      : immersiveOrientationRef.current;
-
     if (player) {
-      setImmersiveOrientation(orientation);
+      setImmersiveOrientation(readPlayerVideoOrientation(player));
     }
 
     setTransitionEnabled(false);
     setIsImmersive(true);
-    syncImmersiveViewportMetrics();
+    refreshActivePlayerLayout();
 
-    const resizePlayer = () => {
-      getActivePlayer()?.resize?.();
-    };
-
-    requestAnimationFrame(() => {
-      resizePlayer();
-      requestAnimationFrame(() => {
-        resizePlayer();
-        setTransitionEnabled(true);
-      });
+    runAfterDoubleFrame(() => {
+      refreshActivePlayerLayout();
+      setTransitionEnabled(true);
     });
-  }, [exitImmersive, syncImmersiveViewportMetrics]);
+  }, [exitImmersive, refreshActivePlayerLayout]);
 
   useEffect(() => {
+    if (isImmersiveRef.current) return;
+
     const player = getActivePlayer();
     if (!player) return;
     setImmersiveOrientation(readPlayerVideoOrientation(player));
   }, [translateIndex, activeIndex]);
 
   useEffect(() => {
-    const resizeActivePlayer = () => {
-      syncImmersiveViewportMetrics();
-      const player = getActivePlayer();
-      player?.resize?.();
+    const onLayoutChange = () => {
+      refreshActivePlayerLayout();
     };
 
-    requestAnimationFrame(resizeActivePlayer);
+    requestAnimationFrame(onLayoutChange);
 
-    window.addEventListener("orientationchange", resizeActivePlayer);
-    window.visualViewport?.addEventListener("resize", resizeActivePlayer);
-    window.visualViewport?.addEventListener("scroll", resizeActivePlayer);
+    window.addEventListener("orientationchange", onLayoutChange);
+    window.visualViewport?.addEventListener("resize", onLayoutChange);
+    window.visualViewport?.addEventListener("scroll", onLayoutChange);
 
     return () => {
-      window.removeEventListener("orientationchange", resizeActivePlayer);
-      window.visualViewport?.removeEventListener("resize", resizeActivePlayer);
-      window.visualViewport?.removeEventListener("scroll", resizeActivePlayer);
+      window.removeEventListener("orientationchange", onLayoutChange);
+      window.visualViewport?.removeEventListener("resize", onLayoutChange);
+      window.visualViewport?.removeEventListener("scroll", onLayoutChange);
     };
-  }, [isImmersive, translateIndex, activeIndex, immersiveOrientation, syncImmersiveViewportMetrics]);
+  }, [isImmersive, translateIndex, activeIndex, immersiveOrientation, refreshActivePlayerLayout]);
 
   useFeedViewportGestures({
     enabled: items.length > 0,
@@ -791,10 +707,10 @@ export default function FeedPlayer({
       ? "feed-immersive--landscape"
       : "feed-immersive--portrait";
 
-  const trackTransform =
-    isImmersive && immersiveOrientation === "landscape"
-      ? "none"
-      : `translate3d(0, calc(-${translateIndex} * 100dvh), 0)`;
+  const trackTransform = getFeedTrackTransform(
+    translateIndex,
+    isImmersive && immersiveOrientation === "landscape",
+  );
 
   return (
     <div
