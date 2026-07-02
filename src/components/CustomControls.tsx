@@ -53,10 +53,19 @@ export default function CustomControls({
   }, [panel, playing]);
 
   useEffect(() => {
-    if (!player) return;
+    if (!player || !visible) return;
 
-    const syncState = () => {
-      setPlaying(!player.paused);
+    let rafId = 0;
+    let lastSyncAt = 0;
+    const SYNC_INTERVAL_MS = 250;
+
+    const syncState = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastSyncAt < SYNC_INTERVAL_MS) return;
+      lastSyncAt = now;
+
+      const paused = player.paused;
+      setPlaying((prev) => (prev === !paused ? prev : !paused));
       setCurrentTime(player.currentTime ?? 0);
       setDuration(player.duration ?? 0);
 
@@ -74,6 +83,14 @@ export default function CustomControls({
       }
     };
 
+    const scheduleSync = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        syncState();
+      });
+    };
+
     const onPlay = () => {
       setPlaying(true);
       resetHideTimer();
@@ -83,32 +100,39 @@ export default function CustomControls({
       setShowUi(true);
     };
 
+    const onDurationChange = () => syncState(true);
+    const onLoadedMetadata = () => syncState(true);
+    const onReady = () => syncState(true);
+    const onRateChange = () => syncState(true);
+    const onDefinitionChangeEvent = () => syncState(true);
+
     player.on("play", onPlay);
     player.on("pause", onPause);
     player.on("ended", onPause);
-    player.on("timeupdate", syncState);
-    player.on("durationchange", syncState);
-    player.on("loadedmetadata", syncState);
-    player.on("progress", syncState);
-    player.on("ready", syncState);
-    player.on("ratechange", syncState);
-    player.on("definition_change", syncState);
+    player.on("timeupdate", scheduleSync);
+    player.on("durationchange", onDurationChange);
+    player.on("loadedmetadata", onLoadedMetadata);
+    player.on("progress", scheduleSync);
+    player.on("ready", onReady);
+    player.on("ratechange", onRateChange);
+    player.on("definition_change", onDefinitionChangeEvent);
 
-    syncState();
+    syncState(true);
 
     return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
       player.off("play", onPlay);
       player.off("pause", onPause);
       player.off("ended", onPause);
-      player.off("timeupdate", syncState);
-      player.off("durationchange", syncState);
-      player.off("loadedmetadata", syncState);
-      player.off("progress", syncState);
-      player.off("ready", syncState);
-      player.off("ratechange", syncState);
-      player.off("definition_change", syncState);
+      player.off("timeupdate", scheduleSync);
+      player.off("durationchange", onDurationChange);
+      player.off("loadedmetadata", onLoadedMetadata);
+      player.off("progress", scheduleSync);
+      player.off("ready", onReady);
+      player.off("ratechange", onRateChange);
+      player.off("definition_change", onDefinitionChangeEvent);
     };
-  }, [player, resetHideTimer]);
+  }, [player, visible, resetHideTimer]);
 
   useEffect(() => {
     return () => {

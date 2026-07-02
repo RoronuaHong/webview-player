@@ -1,4 +1,5 @@
 import type { FeedItem, VideoDefinition } from "@/types/feed";
+import { feedPositionStore } from "@/lib/feed-position-store";
 import { resolveVideoId } from "@/lib/playback-store";
 
 export {
@@ -29,7 +30,10 @@ function parseDefinitionsJson(raw?: string | null): Record<string, VideoDefiniti
   }
 }
 
-export function buildFeedPlayerHref(items: FeedItem[]): string {
+export function buildFeedPlayerHref(
+  items: FeedItem[],
+  options?: { index?: number; videoId?: string; url?: string },
+): string {
   if (items.length === 0) return "/player";
 
   const urls = items.map((item) => item.url).join(LIST_SEPARATOR);
@@ -39,6 +43,14 @@ export function buildFeedPlayerHref(items: FeedItem[]): string {
     urls,
     ids,
   });
+
+  if (options?.videoId) {
+    params.set("videoId", options.videoId);
+  } else if (options?.url) {
+    params.set("targetUrl", options.url);
+  } else if (options?.index !== undefined) {
+    params.set("index", String(options.index));
+  }
 
   return `/player?${params.toString()}`;
 }
@@ -100,6 +112,143 @@ export function parseFeedFromSearchParams(
   }
 
   return defaultItems;
+}
+
+export function normalizeMediaUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+
+  try {
+    const parsed = new URL(trimmed, "https://feed.local");
+    return parsed.pathname.split("?")[0].toLowerCase();
+  } catch {
+    return trimmed.split("?")[0].toLowerCase();
+  }
+}
+
+export function feedItemMatchesUrl(item: FeedItem, targetUrl: string) {
+  const target = normalizeMediaUrl(targetUrl);
+  if (!target) return false;
+
+  if (normalizeMediaUrl(item.url) === target) return true;
+
+  return (
+    item.definitions?.some(
+      (definition) => normalizeMediaUrl(definition.url) === target,
+    ) ?? false
+  );
+}
+
+export function findFeedItemIndex(
+  items: FeedItem[],
+  options: { videoId?: string | null; url?: string | null },
+) {
+  const videoId = options.videoId?.trim();
+  if (videoId) {
+    const byId = items.findIndex((item) => item.id === videoId);
+    if (byId >= 0) return byId;
+  }
+
+  const url = options.url?.trim();
+  if (url) {
+    return items.findIndex((item) => feedItemMatchesUrl(item, url));
+  }
+
+  return -1;
+}
+
+export function hasExplicitFeedPosition(options: {
+  index?: string | null;
+  videoId?: string | null;
+  url?: string | null;
+}) {
+  if (
+    options.index !== null &&
+    options.index !== undefined &&
+    options.index !== ""
+  ) {
+    return true;
+  }
+
+  if (options.videoId?.trim()) return true;
+  if (options.url?.trim()) return true;
+
+  return false;
+}
+
+export function resolveSavedFeedIndex(items: FeedItem[]) {
+  const saved = feedPositionStore.getForItems(items);
+  if (!saved) return -1;
+
+  return findFeedItemIndex(items, {
+    videoId: saved.videoId,
+    url: saved.url,
+  });
+}
+
+const FEED_POSITION_PARAM_KEYS = [
+  "index",
+  "videoId",
+  "id",
+  "video_id",
+  "targetUrl",
+  "videoUrl",
+  "target_url",
+] as const;
+
+export function syncFeedPositionToUrl(items: FeedItem[], index: number) {
+  if (typeof window === "undefined") return;
+
+  const item = items[index];
+  if (!item) return;
+
+  const params = new URLSearchParams(window.location.search);
+  FEED_POSITION_PARAM_KEYS.forEach((key) => params.delete(key));
+  params.set("videoId", item.id);
+  params.set("index", String(index));
+
+  const query = params.toString();
+  const nextUrl = query
+    ? `${window.location.pathname}?${query}`
+    : window.location.pathname;
+  const currentUrl = `${window.location.pathname}${window.location.search}`;
+
+  if (nextUrl !== currentUrl) {
+    window.history.replaceState(window.history.state, "", nextUrl);
+  }
+}
+
+export function resolveInitialFeedIndex(
+  items: FeedItem[],
+  options: {
+    index?: string | number | null;
+    videoId?: string | null;
+    url?: string | null;
+    restoreSaved?: boolean;
+  },
+) {
+  if (items.length === 0) return 0;
+
+  if (options.restoreSaved === true) {
+    const bySaved = resolveSavedFeedIndex(items);
+    if (bySaved >= 0) return bySaved;
+  }
+
+  const rawIndex = options.index;
+  if (rawIndex !== null && rawIndex !== undefined && rawIndex !== "") {
+    const parsed = Number(rawIndex);
+    if (Number.isFinite(parsed)) {
+      return Math.min(Math.max(Math.trunc(parsed), 0), items.length - 1);
+    }
+  }
+
+  const byLocator = findFeedItemIndex(items, {
+    videoId: options.videoId,
+    url: options.url,
+  });
+  if (byLocator >= 0) return byLocator;
+
+  return 0;
 }
 
 export function toXgDefinitionList(definitions: VideoDefinition[]) {

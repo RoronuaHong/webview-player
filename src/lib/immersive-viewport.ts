@@ -1,3 +1,5 @@
+import { debounce } from "@/lib/webview-runtime";
+
 export function syncImmersiveViewportMetrics(
   viewport: HTMLElement | null | undefined,
 ) {
@@ -14,4 +16,17 @@ export function runAfterDoubleFrame(callback: () => void) {
   requestAnimationFrame(() => {
     requestAnimationFrame(callback);
   });
+}
+
+export function createLayoutRefreshHandler(
+  refresh: () => void,
+  debounceMs: number,
+) {
+  const debouncedRefresh = debounce(refresh, debounceMs);
+
+  return {
+    refreshNow: refresh,
+    refresh: debouncedRefresh,
+    cancel: debouncedRefresh.cancel,
+  };
 }

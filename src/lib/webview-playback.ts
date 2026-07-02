@@ -16,7 +16,10 @@ export function getWebViewVideoAttributes() {
   } as const;
 }
 
-export function applyInlineVideoElement(video: HTMLVideoElement) {
+export function applyInlineVideoElement(
+  video: HTMLVideoElement,
+  options?: { preload?: "none" | "metadata" | "auto" },
+) {
   video.setAttribute("playsinline", "true");
   video.setAttribute("webkit-playsinline", "true");
   video.setAttribute("x5-playsinline", "true");
@@ -27,7 +30,7 @@ export function applyInlineVideoElement(video: HTMLVideoElement) {
     "controlsList",
     "nodownload noplaybackrate noremoteplayback",
   );
-  video.setAttribute("preload", "auto");
+  video.setAttribute("preload", options?.preload ?? "auto");
 }
 
 export function findPlayerVideoElement(player: Player): HTMLVideoElement | null {
@@ -38,10 +41,24 @@ export function findPlayerVideoElement(player: Player): HTMLVideoElement | null 
   return video instanceof HTMLVideoElement ? video : null;
 }
 
-export function ensurePlayerVideoInline(player: Player) {
+export function setPlayerVideoPreload(
+  player: Player,
+  preload: "none" | "metadata" | "auto",
+) {
   const video = findPlayerVideoElement(player);
   if (video) {
-    applyInlineVideoElement(video);
+    video.preload = preload;
+    video.setAttribute("preload", preload);
+  }
+}
+
+export function ensurePlayerVideoInline(
+  player: Player,
+  options?: { preload?: "none" | "metadata" | "auto" },
+) {
+  const video = findPlayerVideoElement(player);
+  if (video) {
+    applyInlineVideoElement(video, options);
   }
 }
 

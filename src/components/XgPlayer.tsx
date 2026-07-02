@@ -13,7 +13,9 @@ import {
   ensurePlayerVideoInline,
   getWebViewVideoAttributes,
   safePlayerPlay,
+  setPlayerVideoPreload,
 } from "@/lib/webview-playback";
+import { getWebViewPerformanceProfile } from "@/lib/webview-runtime";
 import {
   readPlayerVideoOrientation,
   type VideoOrientation,
@@ -25,6 +27,7 @@ export type XgPlayerProps = {
   url: string;
   poster?: string;
   active?: boolean;
+  enabled?: boolean;
   isLive?: boolean;
   startTime?: number;
   definitions?: VideoDefinition[];
@@ -60,6 +63,7 @@ export default function XgPlayer({
   url,
   poster,
   active = false,
+  enabled = true,
   isLive = false,
   startTime = 0,
   definitions = [],
@@ -90,6 +94,8 @@ export default function XgPlayer({
     defaultDefinition ?? definitions[0]?.definition,
   );
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastProgressReportRef = useRef(0);
+  const perfProfileRef = useRef(getWebViewPerformanceProfile());
 
   activeRef.current = active;
   onEndedRef.current = onEnded;
@@ -112,6 +118,16 @@ export default function XgPlayer({
     const instance = playerRef.current;
     if (!instance) return;
 
+    const now = Date.now();
+    if (
+      !immediate &&
+      now - lastProgressReportRef.current <
+        perfProfileRef.current.progressThrottleMs
+    ) {
+      return;
+    }
+    lastProgressReportRef.current = now;
+
     playbackStore.update(
       {
         videoId,
@@ -127,9 +143,12 @@ export default function XgPlayer({
   };
 
   useEffect(() => {
+    if (!enabled) return;
+
     const container = containerRef.current;
     if (!container) return;
 
+    const profile = perfProfileRef.current;
     const plugins = getHlsPlugins(url);
     const hlsMode = getHlsPlaybackMode(url);
     if (hlsMode === "none") {
@@ -154,7 +173,7 @@ export default function XgPlayer({
       poster,
       width: "100%",
       height: "100%",
-      fluid: true,
+      fluid: profile.fluidPlayer,
       isLive,
       playsinline: true,
       autoplay: false,
@@ -276,10 +295,10 @@ export default function XgPlayer({
     reportVideoOrientation(instance);
 
     progressTimerRef.current = setInterval(() => {
-      if (activeRef.current && !instance.paused) {
+      if (!instance.paused) {
         reportProgress(true);
       }
-    }, 2000);
+    }, profile.progressBackupIntervalMs);
 
     if (activeRef.current && lifecycleManager.getPhase() === "active") {
       void safePlayerPlay(instance);
@@ -308,11 +327,18 @@ export default function XgPlayer({
       setPlayer(null);
       onPlayerInstanceRef.current?.(videoId, null);
     };
-  }, [videoId, url, poster, isLive, definitionsKey, defaultDefinition]);
+  }, [enabled, videoId, url, poster, isLive, definitionsKey, defaultDefinition]);
 
   useEffect(() => {
     const instance = playerRef.current;
-    if (!instance) return;
+    if (!instance || !enabled) return;
+
+    setPlayerVideoPreload(instance, active ? "auto" : "metadata");
+  }, [active, enabled]);
+
+  useEffect(() => {
+    const instance = playerRef.current;
+    if (!instance || !enabled) return;
 
     const canPlay =
       active &&
@@ -333,9 +359,10 @@ export default function XgPlayer({
       reportProgress(false, true);
       instance.pause();
     }
-  }, [active, videoId]);
+  }, [active, enabled, videoId]);
 
   useEffect(() => {
+    if (!enabled) return;
     return lifecycleManager.subscribe(({ phase, shouldResume }) => {
       const instance = playerRef.current;
       if (!instance || !activeRef.current) return;
@@ -357,7 +384,7 @@ export default function XgPlayer({
         void safePlayerPlay(instance);
       }
     });
-  }, [videoId, url]);
+  }, [enabled, videoId, url]);
 
   const handlePlaybackRateChange = (rate: PlaybackRate) => {
     onPlaybackRateChangeRef.current?.(rate);
@@ -370,6 +397,22 @@ export default function XgPlayer({
     onDefinitionChangeRef.current?.(definition);
     reportProgress(!playerRef.current?.paused, true);
   };
+
+  if (!enabled) {
+    return (
+      <div className="portrait-player relative h-full w-full bg-black">
+        {poster ? (
+          <img
+            src={poster}
+            alt=""
+            className="h-full w-full object-contain"
+            loading="lazy"
+            decoding="async"
+          />
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="portrait-player relative h-full w-full bg-black">

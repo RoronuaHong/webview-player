@@ -82,7 +82,6 @@ export function useFeedViewportGestures({
       movedBeyondTap = false;
       startY = touch.clientY;
       startX = touch.clientX;
-      event.stopPropagation();
     };
 
     const onTouchMove = (event: TouchEvent) => {
@@ -99,10 +98,6 @@ export function useFeedViewportGestures({
         Math.abs(deltaX) > TAP_MOVEMENT_THRESHOLD
       ) {
         movedBeyondTap = true;
-      }
-
-      if (swipeEnabled && Math.abs(deltaY) > Math.abs(deltaX)) {
-        event.preventDefault();
       }
     };
 
@@ -121,7 +116,6 @@ export function useFeedViewportGestures({
       const deltaY = touch.clientY - startY;
       const deltaX = touch.clientX - startX;
       reset();
-      event.stopPropagation();
       completeGesture(deltaY, deltaX);
     };
 
@@ -140,7 +134,6 @@ export function useFeedViewportGestures({
       movedBeyondTap = false;
       startY = event.clientY;
       startX = event.clientX;
-      event.stopPropagation();
     };
 
     const onPointerUp = (event: PointerEvent) => {
@@ -154,36 +147,50 @@ export function useFeedViewportGestures({
       const deltaY = event.clientY - startY;
       const deltaX = event.clientX - startX;
       reset();
-      event.stopPropagation();
       completeGesture(deltaY, deltaX);
     };
 
     const onPointerCancel = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
       reset();
-      event.stopPropagation();
     };
 
-    viewport.addEventListener("touchstart", onTouchStart, { capture: true });
-    viewport.addEventListener("touchmove", onTouchMove, {
-      capture: true,
-      passive: false,
-    });
-    viewport.addEventListener("touchend", onTouchEnd, { capture: true });
-    viewport.addEventListener("touchcancel", onTouchCancel, { capture: true });
-    viewport.addEventListener("pointerdown", onPointerDown, { capture: true });
-    viewport.addEventListener("pointerup", onPointerUp, { capture: true });
-    viewport.addEventListener("pointercancel", onPointerCancel, {
-      capture: true,
-    });
+    const supportsTouch =
+      typeof window !== "undefined" &&
+      ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 
-    return () => {
-      viewport.removeEventListener("touchstart", onTouchStart, { capture: true });
-      viewport.removeEventListener("touchmove", onTouchMove, { capture: true });
-      viewport.removeEventListener("touchend", onTouchEnd, { capture: true });
-      viewport.removeEventListener("touchcancel", onTouchCancel, {
+    if (supportsTouch) {
+      viewport.addEventListener("touchstart", onTouchStart, {
+        capture: true,
+        passive: true,
+      });
+      viewport.addEventListener("touchmove", onTouchMove, {
+        capture: true,
+        passive: true,
+      });
+      viewport.addEventListener("touchend", onTouchEnd, { capture: true });
+      viewport.addEventListener("touchcancel", onTouchCancel, { capture: true });
+    } else {
+      viewport.addEventListener("pointerdown", onPointerDown, { capture: true });
+      viewport.addEventListener("pointerup", onPointerUp, { capture: true });
+      viewport.addEventListener("pointercancel", onPointerCancel, {
         capture: true,
       });
+    }
+
+    return () => {
+      if (supportsTouch) {
+        viewport.removeEventListener("touchstart", onTouchStart, {
+          capture: true,
+        });
+        viewport.removeEventListener("touchmove", onTouchMove, { capture: true });
+        viewport.removeEventListener("touchend", onTouchEnd, { capture: true });
+        viewport.removeEventListener("touchcancel", onTouchCancel, {
+          capture: true,
+        });
+        return;
+      }
+
       viewport.removeEventListener("pointerdown", onPointerDown, {
         capture: true,
       });

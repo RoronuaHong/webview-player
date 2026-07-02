@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import FeedPlayer from "@/components/FeedPlayer";
-import { parseFeedFromSearchParams } from "@/lib/feed-utils";
+import { parseFeedFromSearchParams, resolveInitialFeedIndex } from "@/lib/feed-utils";
 import type { FeedItem } from "@/types/feed";
 
 type PlayerContentProps = {
@@ -35,14 +35,30 @@ export default function PlayerContent({ defaultItems }: PlayerContentProps) {
     defaultItems,
   );
 
-  const initialIndex = Number(searchParams.get("index") ?? "0");
+  const positionParams = {
+    index: searchParams.get("index"),
+    videoId:
+      searchParams.get("videoId") ??
+      searchParams.get("id") ??
+      searchParams.get("video_id"),
+    url:
+      searchParams.get("targetUrl") ??
+      searchParams.get("videoUrl") ??
+      searchParams.get("target_url"),
+  };
+
+  // 首屏仅用 URL 做 SSR 对齐；客户端挂载后会以 localStorage 最后滑动位置为准
+  const initialIndex = resolveInitialFeedIndex(items, {
+    ...positionParams,
+    restoreSaved: false,
+  });
   const isLive = searchParams.get("live") === "1";
   const bridgeName = searchParams.get("bridge") ?? "WebViewBridge";
 
   return (
     <FeedPlayer
       items={items}
-      initialIndex={Number.isFinite(initialIndex) ? initialIndex : 0}
+      initialIndex={initialIndex}
       isLive={isLive}
       bridgeName={bridgeName}
     />

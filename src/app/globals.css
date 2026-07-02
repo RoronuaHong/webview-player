@@ -60,6 +60,18 @@ html {
 .feed-viewport {
   touch-action: none;
   overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.feed-viewport--low-end .feed-track {
+  transition-duration: 0.2s;
+  will-change: auto;
+}
+
+.feed-card {
+  overflow: hidden;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .feed-immersive {
@@ -145,8 +157,4 @@ html {
 
 .feed-track--instant {
   transition: none !important;
-}
-
-.feed-card {
-  overflow: hidden;
 }

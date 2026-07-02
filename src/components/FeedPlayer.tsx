@@ -12,10 +12,12 @@ import {
   toRealIndex,
   toTranslateIndex,
 } from "@/lib/feed-carousel";
-import { findDefinition, toXgDefinitionList } from "@/lib/feed-utils";
+import { findDefinition, findFeedItemIndex, resolveSavedFeedIndex, syncFeedPositionToUrl, toXgDefinitionList } from "@/lib/feed-utils";
+import { feedPositionStore } from "@/lib/feed-position-store";
 import {
   runAfterDoubleFrame,
   syncImmersiveViewportMetrics,
+  createLayoutRefreshHandler,
 } from "@/lib/immersive-viewport";
 import { PlayerBridge } from "@/lib/jsbridge";
 import { lifecycleManager } from "@/lib/lifecycle-manager";
@@ -24,6 +26,10 @@ import { playbackStore } from "@/lib/playback-store";
 import { playerSettings } from "@/lib/player-settings";
 import { readPlayerVideoOrientation, type VideoOrientation } from "@/lib/video-orientation";
 import { safePlayerPlay } from "@/lib/webview-playback";
+import {
+  getWebViewPerformanceProfile,
+  shouldMountFeedPlayer,
+} from "@/lib/webview-runtime";
 import type { FeedItem, PlaybackRate, VideoDefinition } from "@/types/feed";
 
 type FeedPlayerProps = {
@@ -50,6 +56,7 @@ export default function FeedPlayer({
   const pendingSlideRef = useRef<{ target: number; prev: number } | null>(null);
   const pendingSnapRef = useRef<"head" | "tail" | null>(null);
   const switchTimerRef = useRef<number | null>(null);
+  const perfProfileRef = useRef(getWebViewPerformanceProfile());
 
   const loop = items.length > 1;
   const displayItems = useMemo(() => buildDisplayItems(items), [items]);
@@ -72,6 +79,7 @@ export default function FeedPlayer({
   const [immersiveOrientation, setImmersiveOrientation] =
     useState<VideoOrientation>("portrait");
   const immersiveOrientationRef = useRef<VideoOrientation>("portrait");
+  const [lowEndClass, setLowEndClass] = useState("");
 
   translateIndexRef.current = translateIndex;
   itemsRef.current = items;
@@ -132,9 +140,20 @@ export default function FeedPlayer({
     finishExit();
   }, []);
 
-  const refreshActivePlayerLayout = useCallback(() => {
-    syncImmersiveViewportMetrics(viewportRef.current);
-    getActivePlayer()?.resize?.();
+  const layoutRefreshRef = useRef(
+    createLayoutRefreshHandler(
+      () => {
+        syncImmersiveViewportMetrics(viewportRef.current);
+        getActivePlayer()?.resize?.();
+      },
+      perfProfileRef.current.resizeDebounceMs,
+    ),
+  );
+
+  useEffect(() => {
+    setLowEndClass(
+      perfProfileRef.current.lowEnd ? " feed-viewport--low-end" : "",
+    );
   }, []);
 
   const saveProgressByIndex = useCallback((index: number, immediate = true) => {
@@ -143,13 +162,25 @@ export default function FeedPlayer({
     const player = getPlayerByRealIndex(index);
     if (!player) return;
 
+    const currentTime = player.currentTime ?? 0;
+    const duration = player.duration ?? 0;
+    const existing = playbackStore.get(item.id);
+
+    if (duration <= 0 && currentTime <= 0 && existing && existing.currentTime > 0) {
+      return;
+    }
+
     playbackStore.update(
       {
         videoId: item.id,
         url: item.url,
-        currentTime: player.currentTime ?? 0,
-        duration: player.duration ?? 0,
+        currentTime,
+        duration,
         wasPlaying: !player.paused,
+        playbackRate: player.playbackRate,
+        definition:
+          player.curDefinition?.definition ??
+          existing?.definition,
       },
       { immediate },
     );
@@ -162,9 +193,15 @@ export default function FeedPlayer({
     [saveProgressByIndex],
   );
 
+  const persistFeedPosition = useCallback((index: number) => {
+    feedPositionStore.save(itemsRef.current, index);
+    syncFeedPositionToUrl(itemsRef.current, index);
+  }, []);
+
   const emitSlideChange = useCallback(
     (targetIndex: number, prevIndex: number, isLoop: boolean) => {
       const nextItem = itemsRef.current[targetIndex];
+      persistFeedPosition(targetIndex);
       bridgeRef.current?.emit("slide_change", {
         index: targetIndex,
         prevIndex,
@@ -176,6 +213,10 @@ export default function FeedPlayer({
     },
     [],
   );
+
+  const saveActiveFeedPosition = useCallback(() => {
+    persistFeedPosition(activeIndexRef.current);
+  }, [persistFeedPosition]);
 
   const finishSwitch = useCallback(() => {
     if (switchTimerRef.current) {
@@ -369,9 +410,45 @@ export default function FeedPlayer({
       const length = itemsRef.current.length;
       const clamped = Math.max(0, Math.min(length - 1, index));
       goToTranslateIndex(toTranslateIndex(clamped, loop));
+      return clamped;
     },
     [goToTranslateIndex, loop],
   );
+
+  const scrollToVideoId = useCallback(
+    (videoId: string) => {
+      const index = findFeedItemIndex(itemsRef.current, { videoId });
+      if (index < 0) {
+        throw new Error(`Video not found: ${videoId}`);
+      }
+      return scrollToIndex(index);
+    },
+    [scrollToIndex],
+  );
+
+  const scrollToUrl = useCallback(
+    (url: string) => {
+      const index = findFeedItemIndex(itemsRef.current, { url });
+      if (index < 0) {
+        throw new Error(`Video not found: ${url}`);
+      }
+      return scrollToIndex(index);
+    },
+    [scrollToIndex],
+  );
+
+  const buildFeedCatalog = useCallback(() => {
+    return itemsRef.current.map((item, index) => ({
+      index,
+      videoId: item.id,
+      url: item.url,
+      title: item.title,
+      definitions: item.definitions?.map((definition) => ({
+        definition: definition.definition,
+        url: definition.url,
+      })),
+    }));
+  }, []);
 
   const handleTrackTransitionEnd = useCallback(
     (event: React.TransitionEvent<HTMLDivElement>) => {
@@ -429,11 +506,41 @@ export default function FeedPlayer({
     bridge.register("scrollToIndex", (data) => {
       const index = Number(data?.index);
       if (Number.isFinite(index)) {
-        scrollToIndex(index);
+        return { index: scrollToIndex(index) };
       }
+      throw new Error("Invalid index");
     });
+    bridge.register("scrollToVideoId", (data) => {
+      const videoId = typeof data?.videoId === "string" ? data.videoId : "";
+      if (!videoId) {
+        throw new Error("videoId is required");
+      }
+      return { index: scrollToVideoId(videoId), videoId };
+    });
+    bridge.register("scrollToUrl", (data) => {
+      const url = typeof data?.url === "string" ? data.url : "";
+      if (!url) {
+        throw new Error("url is required");
+      }
+      return { index: scrollToUrl(url), url };
+    });
+    bridge.register("getIndexByVideoId", (data) => {
+      const videoId = typeof data?.videoId === "string" ? data.videoId : "";
+      const index = findFeedItemIndex(itemsRef.current, { videoId });
+      return { index, videoId, found: index >= 0 };
+    });
+    bridge.register("getIndexByUrl", (data) => {
+      const url = typeof data?.url === "string" ? data.url : "";
+      const index = findFeedItemIndex(itemsRef.current, { url });
+      return { index, url, found: index >= 0 };
+    });
+    bridge.register("getFeedCatalog", () => ({
+      items: buildFeedCatalog(),
+    }));
     bridge.register("getActiveIndex", () => ({
       index: activeIndexRef.current,
+      videoId: getActiveItem()?.id,
+      url: getActiveItem()?.url,
     }));
     bridge.register("getAllProgress", () => ({
       records: playbackStore.exportAll(),
@@ -521,6 +628,10 @@ export default function FeedPlayer({
     bridge.emit("feed_ready", {
       count: itemsRef.current.length,
       records: playbackStore.exportAll(),
+      items: buildFeedCatalog(),
+      index: activeIndexRef.current,
+      videoId: getActiveItem()?.id,
+      url: getActiveItem()?.url,
     });
 
     return () => {
@@ -530,7 +641,7 @@ export default function FeedPlayer({
       bridge.unmount();
       bridgeRef.current = null;
     };
-  }, [bridgeName, saveActiveProgress, scrollToIndex]);
+  }, [bridgeName, saveActiveProgress, scrollToIndex, scrollToVideoId, scrollToUrl, buildFeedCatalog]);
 
   useEffect(() => {
     const length = items.length;
@@ -561,14 +672,50 @@ export default function FeedPlayer({
     bridgeRef.current?.emit("feed_ready", {
       count: length,
       records: playbackStore.exportAll(),
+      items: buildFeedCatalog(),
+      index: activeIndexRef.current,
+      videoId: items[clamped]?.id,
+      url: items[clamped]?.url,
     });
+  }, [items, buildFeedCatalog]);
+
+  const restoredPositionRef = useRef(false);
+
+  useEffect(() => {
+    restoredPositionRef.current = false;
   }, [items]);
 
   useEffect(() => {
-    if (initialIndex > 0) {
-      scrollToIndex(initialIndex);
+    if (items.length === 0 || restoredPositionRef.current) return;
+    restoredPositionRef.current = true;
+
+    const savedIndex = resolveSavedFeedIndex(items);
+    const targetIndex =
+      savedIndex >= 0
+        ? savedIndex
+        : Math.min(
+            Math.max(initialIndex, 0),
+            Math.max(items.length - 1, 0),
+          );
+
+    if (targetIndex !== activeIndexRef.current) {
+      scrollToIndex(targetIndex);
     }
-  }, [initialIndex, scrollToIndex]);
+
+    persistFeedPosition(targetIndex);
+  }, [items, initialIndex, persistFeedPosition, scrollToIndex]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      saveActiveProgress(true);
+      saveActiveFeedPosition();
+    };
+
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+    };
+  }, [saveActiveProgress, saveActiveFeedPosition]);
 
   const handlePlayerInstance = useCallback(
     (displayKey: string, player: Player | null) => {
@@ -642,13 +789,13 @@ export default function FeedPlayer({
 
     setTransitionEnabled(false);
     setIsImmersive(true);
-    refreshActivePlayerLayout();
+    layoutRefreshRef.current.refreshNow();
 
     runAfterDoubleFrame(() => {
-      refreshActivePlayerLayout();
+      layoutRefreshRef.current.refreshNow();
       setTransitionEnabled(true);
     });
-  }, [exitImmersive, refreshActivePlayerLayout]);
+  }, [exitImmersive]);
 
   useEffect(() => {
     if (isImmersiveRef.current) return;
@@ -659,22 +806,23 @@ export default function FeedPlayer({
   }, [translateIndex, activeIndex]);
 
   useEffect(() => {
+    const layout = layoutRefreshRef.current;
+
     const onLayoutChange = () => {
-      refreshActivePlayerLayout();
+      layout.refresh();
     };
 
-    requestAnimationFrame(onLayoutChange);
+    layout.refresh();
 
     window.addEventListener("orientationchange", onLayoutChange);
     window.visualViewport?.addEventListener("resize", onLayoutChange);
-    window.visualViewport?.addEventListener("scroll", onLayoutChange);
 
     return () => {
+      layout.cancel();
       window.removeEventListener("orientationchange", onLayoutChange);
       window.visualViewport?.removeEventListener("resize", onLayoutChange);
-      window.visualViewport?.removeEventListener("scroll", onLayoutChange);
     };
-  }, [isImmersive, translateIndex, activeIndex, immersiveOrientation, refreshActivePlayerLayout]);
+  }, [isImmersive, immersiveOrientation, translateIndex, activeIndex]);
 
   useFeedViewportGestures({
     enabled: items.length > 0,
@@ -712,10 +860,12 @@ export default function FeedPlayer({
     isImmersive && immersiveOrientation === "landscape",
   );
 
+  const mountRadius = perfProfileRef.current.playerMountRadius;
+
   return (
     <div
       ref={viewportRef}
-      className={`feed-viewport relative h-full w-full overflow-hidden bg-black${isImmersive ? ` feed-immersive ${immersiveModeClass}` : ""}`}
+      className={`feed-viewport relative h-full w-full overflow-hidden bg-black${lowEndClass}${isImmersive ? ` feed-immersive ${immersiveModeClass}` : ""}`}
     >
       <div
         ref={trackRef}
@@ -726,18 +876,24 @@ export default function FeedPlayer({
         {displayItems.map((item, displayIndex) => {
           const isActive = displayIndex === translateIndex;
           const isClone = item.displayKey.includes("__clone");
+          const shouldMount = shouldMountFeedPlayer(
+            displayIndex,
+            translateIndex,
+            mountRadius,
+          );
 
           return (
             <section
               key={item.displayKey}
               data-index={item.realIndex}
               data-active={isActive ? "true" : "false"}
-              className="feed-card relative h-[100dvh] w-full shrink-0"
+              className="feed-card relative w-full shrink-0"
             >
               <XgPlayer
                 videoId={item.id}
                 url={item.url}
                 poster={item.poster}
+                enabled={shouldMount}
                 active={isActive}
                 isLive={isLive}
                 isImmersive={isActive && isImmersive}
@@ -745,7 +901,7 @@ export default function FeedPlayer({
                 onVideoOrientation={(orientation) =>
                   handleVideoOrientation(displayIndex, orientation)
                 }
-                startTime={playbackStore.getStartTime(item.id)}
+                startTime={0}
                 definitions={item.definitions}
                 defaultDefinition={item.defaultDefinition}
                 onEnded={
