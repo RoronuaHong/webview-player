@@ -7,15 +7,16 @@ import {
   syncImmersiveViewportMetrics,
   createLayoutRefreshHandler,
 } from "@/lib/immersive-viewport";
-import { snapTrackElement } from "@/lib/feed-carousel";
+import {
+  snapVirtualTrackElement,
+  type FeedSlot,
+} from "@/lib/feed-carousel";
 import { readPlayerVideoOrientation, type VideoOrientation } from "@/lib/video-orientation";
 import { getWebViewPerformanceProfile } from "@/lib/webview-runtime";
 
 type UseImmersivePlayerLayoutOptions = {
   viewportRef: React.RefObject<HTMLDivElement | null>;
   trackRef: React.RefObject<HTMLDivElement | null>;
-  translateIndex: number;
-  translateIndexRef: React.RefObject<number>;
   activeIndex: number;
   getActivePlayer: () => Player | null;
   setTransitionEnabled: (enabled: boolean) => void;
@@ -24,8 +25,6 @@ type UseImmersivePlayerLayoutOptions = {
 export function useImmersivePlayerLayout({
   viewportRef,
   trackRef,
-  translateIndex,
-  translateIndexRef,
   activeIndex,
   getActivePlayer,
   setTransitionEnabled,
@@ -54,7 +53,6 @@ export function useImmersivePlayerLayout({
     if (!isImmersiveRef.current) return;
 
     setTransitionEnabled(false);
-    const idx = translateIndexRef.current ?? 0;
     const wasLandscape = immersiveOrientationRef.current === "landscape";
 
     const finishExit = () => {
@@ -67,15 +65,15 @@ export function useImmersivePlayerLayout({
     if (wasLandscape) {
       setImmersiveOrientation("portrait");
       requestAnimationFrame(() => {
-        snapTrackElement(trackRef.current, idx);
+        snapVirtualTrackElement(trackRef.current, 0);
         requestAnimationFrame(finishExit);
       });
       return;
     }
 
-    snapTrackElement(trackRef.current, idx);
+    snapVirtualTrackElement(trackRef.current, 0);
     finishExit();
-  }, [setTransitionEnabled, trackRef, translateIndexRef]);
+  }, [setTransitionEnabled, trackRef]);
 
   const toggleImmersive = useCallback(() => {
     if (isImmersiveRef.current) {
@@ -99,11 +97,11 @@ export function useImmersivePlayerLayout({
   }, [exitImmersive, getActivePlayer, setTransitionEnabled]);
 
   const handleVideoOrientation = useCallback(
-    (displayIndex: number, orientation: VideoOrientation) => {
-      if (displayIndex !== translateIndexRef.current) return;
+    (slot: FeedSlot, orientation: VideoOrientation) => {
+      if (slot !== "current") return;
       setImmersiveOrientation(orientation);
     },
-    [translateIndexRef],
+    [],
   );
 
   useEffect(() => {
@@ -112,7 +110,7 @@ export function useImmersivePlayerLayout({
     const player = getActivePlayer();
     if (!player) return;
     setImmersiveOrientation(readPlayerVideoOrientation(player));
-  }, [translateIndex, activeIndex, getActivePlayer]);
+  }, [activeIndex, getActivePlayer]);
 
   useEffect(() => {
     const layout = layoutRefreshRef.current;
@@ -131,7 +129,7 @@ export function useImmersivePlayerLayout({
       window.removeEventListener("orientationchange", onLayoutChange);
       window.visualViewport?.removeEventListener("resize", onLayoutChange);
     };
-  }, [isImmersive, immersiveOrientation, translateIndex, activeIndex]);
+  }, [isImmersive, immersiveOrientation, activeIndex]);
 
   return {
     isImmersive,

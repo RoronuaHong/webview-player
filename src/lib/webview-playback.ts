@@ -52,6 +52,138 @@ export function setPlayerVideoPreload(
   }
 }
 
+export function hidePlayerPoster(player: Player) {
+  const root = player.root as HTMLElement | undefined;
+  if (!root) return;
+
+  root.querySelector(".xgplayer-poster")?.classList.add("hide");
+}
+
+export function hasDecodedPreviewFrame(video: HTMLVideoElement) {
+  return (
+    video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    video.videoWidth > 0
+  );
+}
+
+export function playerHasPreviewFrame(player: Player): boolean {
+  const video = findPlayerVideoElement(player);
+  return video ? hasDecodedPreviewFrame(video) : false;
+}
+
+function seekNativeVideoPreview(
+  video: HTMLVideoElement,
+  startTime: number,
+) {
+  if (video.readyState < HTMLMediaElement.HAVE_METADATA) return;
+
+  const target = Math.max(0, startTime);
+  if (Math.abs(video.currentTime - target) <= 0.05) return;
+
+  try {
+    video.currentTime = target;
+  } catch {
+  }
+}
+
+function waitForVideoCanPrime(video: HTMLVideoElement): Promise<void> {
+  if (
+    video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+    video.networkState !== HTMLMediaElement.NETWORK_LOADING
+  ) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      video.removeEventListener("loadedmetadata", finish);
+      video.removeEventListener("loadeddata", finish);
+      video.removeEventListener("canplay", finish);
+      resolve();
+    };
+
+    video.addEventListener("loadedmetadata", finish);
+    video.addEventListener("loadeddata", finish);
+    video.addEventListener("canplay", finish);
+  });
+}
+
+export function isBenignPlayError(error: unknown): boolean {
+  if (!(error instanceof DOMException)) return false;
+  return error.name === "NotAllowedError" || error.name === "AbortError";
+}
+
+const inflightNativePrime = new WeakMap<
+  HTMLVideoElement,
+  Promise<boolean>
+>();
+
+export async function primeNativeVideoElement(
+  video: HTMLVideoElement,
+  startTime = 0,
+): Promise<boolean> {
+  const inflight = inflightNativePrime.get(video);
+  if (inflight) return inflight;
+
+  const task = (async () => {
+    seekNativeVideoPreview(video, startTime);
+
+    if (hasDecodedPreviewFrame(video)) {
+      return true;
+    }
+
+    await waitForVideoCanPrime(video);
+    seekNativeVideoPreview(video, startTime);
+
+    if (hasDecodedPreviewFrame(video)) {
+      return true;
+    }
+
+    const wasMuted = video.muted;
+    video.muted = true;
+
+    try {
+      await video.play();
+    } catch (error) {
+      if (!isBenignPlayError(error)) {
+        console.warn("[WebView] preview play() rejected:", error);
+      }
+    } finally {
+      if (!video.paused) {
+        video.pause();
+      }
+      seekNativeVideoPreview(video, startTime);
+      video.muted = wasMuted;
+    }
+
+    return hasDecodedPreviewFrame(video);
+  })().finally(() => {
+    inflightNativePrime.delete(video);
+  });
+
+  inflightNativePrime.set(video, task);
+  return task;
+}
+
+/** Decode and pause at the saved position for adjacent feed cards. */
+export async function primePlayerPreviewFrame(
+  player: Player,
+  startTime = 0,
+): Promise<boolean> {
+  const video = findPlayerVideoElement(player);
+  if (!video) return false;
+
+  const primed = await primeNativeVideoElement(video, startTime);
+  if (primed) {
+    hidePlayerPoster(player);
+  }
+
+  return primed;
+}
+
 export function ensurePlayerVideoInline(
   player: Player,
   options?: { preload?: "none" | "metadata" | "auto" },
@@ -77,7 +209,7 @@ export async function safePlayerPlay(
     await player.play();
     return true;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "NotAllowedError") {
+    if (isBenignPlayError(error)) {
       return false;
     }
 

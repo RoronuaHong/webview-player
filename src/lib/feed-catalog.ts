@@ -54,7 +54,7 @@ export function loadDefaultFeedItems(): FeedItem[] {
         `/videos/${playback720}`,
         `/videos/${playback360}`,
       );
-      item.defaultDefinition = "720p";
+      item.defaultDefinition = "360p";
     }
 
     return item;

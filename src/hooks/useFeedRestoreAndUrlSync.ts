@@ -9,7 +9,7 @@ type UseFeedRestoreAndUrlSyncOptions = {
   initialIndex: number;
   activeIndexRef: React.RefObject<number>;
   scrollToIndex: (index: number) => number;
-  persistFeedPosition: (index: number) => void;
+  persistFeedPosition: (index: number, immediate?: boolean) => void;
 };
 
 export function useFeedRestoreAndUrlSync({
@@ -42,7 +42,7 @@ export function useFeedRestoreAndUrlSync({
       scrollToIndex(targetIndex);
     }
 
-    persistFeedPosition(targetIndex);
+    persistFeedPosition(targetIndex, true);
   }, [
     activeIndexRef,
     initialIndex,

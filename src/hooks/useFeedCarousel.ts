@@ -2,13 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  buildDisplayItems,
   FEED_TRANSITION_MS,
-  toRealIndex,
-  toTranslateIndex,
+  type FeedSlidePhase,
+  type FeedSlotSnapshot,
+  isLoopSlide,
+  resolveFeedSlots,
+  wrapFeedIndex,
 } from "@/lib/feed-carousel";
-import { findFeedItemIndex } from "@/lib/feed-utils";
 import type { FeedItem } from "@/types/feed";
+
+const DRAG_DISTANCE_RATIO = 0.25;
+const DRAG_VELOCITY_THRESHOLD = 0.45;
+const EDGE_RESISTANCE = 0.25;
 
 type SlideChangeHandler = (
   targetIndex: number,
@@ -17,7 +22,9 @@ type SlideChangeHandler = (
 ) => void;
 
 type UseFeedCarouselOptions = {
-  items: FeedItem[];
+  totalCount: number;
+  getItem: (index: number) => FeedItem | null;
+  catalogVersion: number;
   initialIndex: number;
   onBeforeSlide?: (prevIndex: number) => void;
   onSlideChange: SlideChangeHandler;
@@ -25,205 +32,351 @@ type UseFeedCarouselOptions = {
 };
 
 export function useFeedCarousel({
-  items,
+  totalCount,
+  getItem,
+  catalogVersion,
   initialIndex,
   onBeforeSlide,
   onSlideChange,
   onExitImmersive,
 }: UseFeedCarouselOptions) {
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
+  const getItemRef = useRef(getItem);
+  getItemRef.current = getItem;
 
-  const loop = items.length > 1;
-  const displayItems = useMemo(() => buildDisplayItems(items), [items]);
-  const displayItemsRef = useRef(displayItems);
-  displayItemsRef.current = displayItems;
+  const totalCountRef = useRef(totalCount);
+  totalCountRef.current = totalCount;
+
+  const loop = totalCount > 1;
 
   const clampedInitial = Math.min(
     Math.max(initialIndex, 0),
-    Math.max(items.length - 1, 0),
+    Math.max(totalCount - 1, 0),
   );
 
   const activeIndexRef = useRef(clampedInitial);
   const [activeIndex, setActiveIndex] = useState(clampedInitial);
-  const [translateIndex, setTranslateIndex] = useState(
-    toTranslateIndex(clampedInitial, loop),
-  );
+  const [slidePhase, setSlidePhase] = useState<FeedSlidePhase>(0);
+  const [dragOffsetPx, setDragOffsetPx] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isSettling, setIsSettling] = useState(false);
   const [transitionEnabled, setTransitionEnabled] = useState(true);
 
   const switchingRef = useRef(false);
-  const translateIndexRef = useRef(toTranslateIndex(clampedInitial, loop));
-  const pendingSlideRef = useRef<{ target: number; prev: number } | null>(null);
-  const pendingSnapRef = useRef<"head" | "tail" | null>(null);
+  const slidePhaseRef = useRef<FeedSlidePhase>(0);
   const switchTimerRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
+  const dragOffsetRef = useRef(0);
 
-  translateIndexRef.current = translateIndex;
+  slidePhaseRef.current = slidePhase;
   activeIndexRef.current = activeIndex;
+  isDraggingRef.current = isDragging;
+  dragOffsetRef.current = dragOffsetPx;
+
+  const slots = useMemo(
+    () =>
+      resolveFeedSlots(
+        (index) => getItemRef.current(index),
+        totalCount,
+        activeIndex,
+        loop,
+      ),
+    [activeIndex, catalogVersion, loop, totalCount],
+  );
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
 
   const finishSwitch = useCallback(() => {
     if (switchTimerRef.current) {
       clearTimeout(switchTimerRef.current);
       switchTimerRef.current = null;
     }
-    pendingSnapRef.current = null;
     switchingRef.current = false;
+    setIsSettling(false);
   }, []);
 
-  const snapWithoutTransition = useCallback(
-    (nextTranslateIndex: number, nextRealIndex: number) => {
-      setTransitionEnabled(false);
-
-      translateIndexRef.current = nextTranslateIndex;
-      setTranslateIndex(nextTranslateIndex);
-      activeIndexRef.current = nextRealIndex;
-      setActiveIndex(nextRealIndex);
-
-      const pending = pendingSlideRef.current;
-      if (pending) {
-        onSlideChange(pending.target, pending.prev, true);
-        pendingSlideRef.current = null;
+  const commitSlide = useCallback(
+    (phase: FeedSlidePhase) => {
+      const length = totalCountRef.current;
+      if (length <= 1 || phase === 0) {
+        finishSwitch();
+        return;
       }
 
+      const prevIndex = activeIndexRef.current;
+      const nextIndex =
+        phase === -1
+          ? loop
+            ? wrapFeedIndex(prevIndex + 1, length)
+            : Math.min(prevIndex + 1, length - 1)
+          : loop
+            ? wrapFeedIndex(prevIndex - 1, length)
+            : Math.max(prevIndex - 1, 0);
+
+      setTransitionEnabled(false);
+      setSlidePhase(0);
+      slidePhaseRef.current = 0;
+      activeIndexRef.current = nextIndex;
+      setActiveIndex(nextIndex);
+
       requestAnimationFrame(() => {
+        onSlideChange(
+          nextIndex,
+          prevIndex,
+          isLoopSlide(prevIndex, nextIndex, length, loop),
+        );
+
         requestAnimationFrame(() => {
           setTransitionEnabled(true);
           finishSwitch();
         });
       });
     },
-    [finishSwitch, onSlideChange],
+    [finishSwitch, loop, onSlideChange],
   );
 
-  const completeLoopSnap = useCallback(() => {
-    const length = itemsRef.current.length;
-    const current = translateIndexRef.current;
-
-    if (current === length + 1) {
-      snapWithoutTransition(1, 0);
-      return true;
-    }
-
-    if (current === 0) {
-      snapWithoutTransition(length, length - 1);
-      return true;
-    }
-
-    return false;
-  }, [snapWithoutTransition]);
-
-  const scheduleSwitchFallback = useCallback(() => {
-    if (switchTimerRef.current) {
-      clearTimeout(switchTimerRef.current);
-    }
-
-    switchTimerRef.current = window.setTimeout(() => {
-      switchTimerRef.current = null;
-      if (!switchingRef.current) return;
-
-      if (completeLoopSnap()) {
-        return;
+  const scheduleSwitchFallback = useCallback(
+    (expectedPhase: FeedSlidePhase) => {
+      if (switchTimerRef.current) {
+        clearTimeout(switchTimerRef.current);
       }
 
-      finishSwitch();
-    }, FEED_TRANSITION_MS + 80);
-  }, [completeLoopSnap, finishSwitch]);
+      switchTimerRef.current = window.setTimeout(() => {
+        switchTimerRef.current = null;
+        if (!switchingRef.current) return;
+        if (slidePhaseRef.current !== expectedPhase) return;
+        commitSlide(expectedPhase);
+      }, FEED_TRANSITION_MS + 80);
+    },
+    [commitSlide],
+  );
 
-  const goToTranslateIndex = useCallback(
-    (nextTranslateIndex: number, options?: { loopWrap?: boolean }) => {
-      const length = itemsRef.current.length;
-      if (length <= 0 || switchingRef.current) return;
+  const beginSlide = useCallback(
+    (phase: 1 | -1) => {
+      const length = totalCountRef.current;
+      if (length <= 1 || switchingRef.current) return;
 
-      const prevRealIndex = activeIndexRef.current;
-      const nextRealIndex = toRealIndex(nextTranslateIndex, length, loop);
+      const current = activeIndexRef.current;
+      if (phase === -1 && !loop && current >= length - 1) return;
+      if (phase === 1 && !loop && current <= 0) return;
 
-      if (
-        !options?.loopWrap &&
-        nextTranslateIndex === translateIndexRef.current
-      ) {
-        return;
-      }
+      const targetIndex =
+        phase === -1
+          ? loop
+            ? wrapFeedIndex(current + 1, length)
+            : current + 1
+          : loop
+            ? wrapFeedIndex(current - 1, length)
+            : current - 1;
+
+      if (!getItemRef.current(targetIndex)) return;
 
       switchingRef.current = true;
-      onBeforeSlide?.(prevRealIndex);
+      setIsSettling(true);
+      onBeforeSlide?.(current);
       onExitImmersive?.();
-
-      if (options?.loopWrap) {
-        pendingSnapRef.current = nextTranslateIndex === 0 ? "head" : "tail";
-      } else {
-        pendingSnapRef.current = null;
-      }
-
       setTransitionEnabled(true);
-
-      const applyTranslateIndex = () => {
-        translateIndexRef.current = nextTranslateIndex;
-        setTranslateIndex(nextTranslateIndex);
-      };
-
-      if (options?.loopWrap) {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (!switchingRef.current) return;
-            applyTranslateIndex();
-          });
-        });
-      } else {
-        applyTranslateIndex();
-      }
-
-      if (nextRealIndex !== prevRealIndex) {
-        if (options?.loopWrap) {
-          pendingSlideRef.current = {
-            target: nextRealIndex,
-            prev: prevRealIndex,
-          };
-        } else {
-          activeIndexRef.current = nextRealIndex;
-          setActiveIndex(nextRealIndex);
-          onSlideChange(nextRealIndex, prevRealIndex, false);
-        }
-      }
-
-      scheduleSwitchFallback();
+      setSlidePhase(phase);
+      slidePhaseRef.current = phase;
+      scheduleSwitchFallback(phase);
     },
-    [loop, onBeforeSlide, onExitImmersive, onSlideChange, scheduleSwitchFallback],
+    [loop, onBeforeSlide, onExitImmersive, scheduleSwitchFallback],
   );
 
   const goNext = useCallback(() => {
-    const length = itemsRef.current.length;
-    if (length <= 1) return;
-
-    const current = translateIndexRef.current;
-    goToTranslateIndex(current + 1, {
-      loopWrap: loop && current === length,
-    });
-  }, [goToTranslateIndex, loop]);
+    beginSlide(-1);
+  }, [beginSlide]);
 
   const goPrev = useCallback(() => {
-    const length = itemsRef.current.length;
-    if (length <= 1) return;
+    beginSlide(1);
+  }, [beginSlide]);
 
-    const current = translateIndexRef.current;
-    goToTranslateIndex(current - 1, {
-      loopWrap: loop && current === 1,
-    });
-  }, [goToTranslateIndex, loop]);
+  const getTargetIndex = useCallback(
+    (phase: 1 | -1) => {
+      const length = totalCountRef.current;
+      const current = activeIndexRef.current;
+
+      if (length <= 1) return -1;
+      if (phase === -1 && !loop && current >= length - 1) return -1;
+      if (phase === 1 && !loop && current <= 0) return -1;
+
+      return phase === -1
+        ? loop
+          ? wrapFeedIndex(current + 1, length)
+          : current + 1
+        : loop
+          ? wrapFeedIndex(current - 1, length)
+          : current - 1;
+    },
+    [loop],
+  );
+
+  const canSettleToPhase = useCallback(
+    (phase: 1 | -1) => {
+      const targetIndex = getTargetIndex(phase);
+      return targetIndex >= 0 && Boolean(getItemRef.current(targetIndex));
+    },
+    [getTargetIndex],
+  );
+
+  const getBoundedDragOffset = useCallback(
+    (deltaY: number) => {
+      if (deltaY === 0) return 0;
+
+      const phase: 1 | -1 = deltaY < 0 ? -1 : 1;
+      if (canSettleToPhase(phase)) return deltaY;
+
+      return deltaY * EDGE_RESISTANCE;
+    },
+    [canSettleToPhase],
+  );
+
+  const handleDragStart = useCallback(() => {
+    if (switchingRef.current || totalCountRef.current <= 1) return;
+
+    setTransitionEnabled(false);
+    setSlidePhase(0);
+    slidePhaseRef.current = 0;
+    setIsDragging(true);
+    isDraggingRef.current = true;
+    setDragOffsetPx(0);
+    dragOffsetRef.current = 0;
+  }, []);
+
+  const handleDragMove = useCallback(
+    ({ deltaY }: { deltaY: number; deltaX: number }) => {
+      if (switchingRef.current || totalCountRef.current <= 1) return;
+
+      if (!isDraggingRef.current) {
+        setIsDragging(true);
+        isDraggingRef.current = true;
+        setTransitionEnabled(false);
+      }
+
+      const nextOffset = getBoundedDragOffset(deltaY);
+      setDragOffsetPx(nextOffset);
+      dragOffsetRef.current = nextOffset;
+    },
+    [getBoundedDragOffset],
+  );
+
+  const handleDragEnd = useCallback(
+    ({
+      deltaY,
+      deltaX,
+      velocityY,
+      viewportHeight,
+    }: {
+      deltaY: number;
+      deltaX: number;
+      velocityY: number;
+      viewportHeight: number;
+    }) => {
+      if (!isDraggingRef.current) return false;
+
+      const absY = Math.abs(deltaY);
+      const absX = Math.abs(deltaX);
+
+      if (absY <= absX || absY < 1) {
+        setTransitionEnabled(true);
+        setIsDragging(false);
+        isDraggingRef.current = false;
+        setDragOffsetPx(0);
+        dragOffsetRef.current = 0;
+        return false;
+      }
+
+      const phase: 1 | -1 = deltaY < 0 ? -1 : 1;
+      const distancePassed = absY > viewportHeight * DRAG_DISTANCE_RATIO;
+      const velocityPassed = Math.abs(velocityY) > DRAG_VELOCITY_THRESHOLD;
+      const shouldCommit =
+        canSettleToPhase(phase) && (distancePassed || velocityPassed);
+
+      setTransitionEnabled(true);
+      setIsDragging(false);
+      isDraggingRef.current = false;
+      setDragOffsetPx(0);
+      dragOffsetRef.current = 0;
+
+      if (!shouldCommit) {
+        setSlidePhase(0);
+        slidePhaseRef.current = 0;
+        return true;
+      }
+
+      const current = activeIndexRef.current;
+      switchingRef.current = true;
+      setIsSettling(true);
+      onBeforeSlide?.(current);
+      onExitImmersive?.();
+      setSlidePhase(phase);
+      slidePhaseRef.current = phase;
+      scheduleSwitchFallback(phase);
+      return true;
+    },
+    [
+      canSettleToPhase,
+      onBeforeSlide,
+      onExitImmersive,
+      scheduleSwitchFallback,
+    ],
+  );
+
+  const handleDragCancel = useCallback(() => {
+    if (!isDraggingRef.current) return;
+
+    setTransitionEnabled(true);
+    setIsDragging(false);
+    isDraggingRef.current = false;
+    setDragOffsetPx(0);
+    dragOffsetRef.current = 0;
+    setSlidePhase(0);
+    slidePhaseRef.current = 0;
+  }, []);
 
   const scrollToIndex = useCallback(
     (index: number) => {
-      const length = itemsRef.current.length;
+      const length = totalCountRef.current;
       const clamped = Math.max(0, Math.min(length - 1, index));
-      goToTranslateIndex(toTranslateIndex(clamped, loop));
+      const prevIndex = activeIndexRef.current;
+
+      if (clamped === prevIndex) return clamped;
+      if (!getItemRef.current(clamped)) {
+        throw new Error(`Feed item not loaded at index ${clamped}`);
+      }
+
+      if (switchTimerRef.current) {
+        window.clearTimeout(switchTimerRef.current);
+        switchTimerRef.current = null;
+      }
+
+      switchingRef.current = false;
+      onBeforeSlide?.(prevIndex);
+      setTransitionEnabled(false);
+      setSlidePhase(0);
+      slidePhaseRef.current = 0;
+      activeIndexRef.current = clamped;
+      setActiveIndex(clamped);
+
+      requestAnimationFrame(() => {
+        setTransitionEnabled(true);
+      });
+
+      onSlideChange(
+        clamped,
+        prevIndex,
+        isLoopSlide(prevIndex, clamped, length, loop),
+      );
+
       return clamped;
     },
-    [goToTranslateIndex, loop],
+    [loop, onBeforeSlide, onSlideChange],
   );
 
   const scrollToVideoId = useCallback(
-    (videoId: string) => {
-      const index = findFeedItemIndex(itemsRef.current, { videoId });
+    (videoId: string, findIndex: (videoId: string) => number) => {
+      const index = findIndex(videoId);
       if (index < 0) {
-        throw new Error(`Video not found: ${videoId}`);
+        throw new Error(`Video not loaded: ${videoId}`);
       }
       return scrollToIndex(index);
     },
@@ -231,10 +384,10 @@ export function useFeedCarousel({
   );
 
   const scrollToUrl = useCallback(
-    (url: string) => {
-      const index = findFeedItemIndex(itemsRef.current, { url });
+    (url: string, findIndex: (url: string) => number) => {
+      const index = findIndex(url);
       if (index < 0) {
-        throw new Error(`Video not found: ${url}`);
+        throw new Error(`Video not loaded: ${url}`);
       }
       return scrollToIndex(index);
     },
@@ -242,30 +395,29 @@ export function useFeedCarousel({
   );
 
   const handleTrackTransitionEnd = useCallback(
-    (event: React.TransitionEvent<HTMLDivElement>, track: HTMLDivElement | null) => {
+    (
+      event: React.TransitionEvent<HTMLDivElement>,
+      track: HTMLDivElement | null,
+    ) => {
       if (event.target !== track || event.propertyName !== "transform") {
         return;
       }
 
       if (!switchingRef.current) return;
 
-      const length = itemsRef.current.length;
-      if (!loop || length <= 1) {
+      const phase = slidePhaseRef.current;
+      if (phase === 0) {
         finishSwitch();
         return;
       }
 
-      if (completeLoopSnap()) {
-        return;
-      }
-
-      finishSwitch();
+      commitSlide(phase);
     },
-    [completeLoopSnap, finishSwitch, loop],
+    [commitSlide, finishSwitch],
   );
 
   useEffect(() => {
-    const length = items.length;
+    const length = totalCount;
     if (length === 0) return;
 
     if (switchTimerRef.current) {
@@ -274,31 +426,34 @@ export function useFeedCarousel({
     }
 
     switchingRef.current = false;
-    pendingSlideRef.current = null;
-    pendingSnapRef.current = null;
 
-    const nextLoop = length > 1;
     const clamped = Math.min(
       Math.max(activeIndexRef.current, 0),
       length - 1,
     );
-    const nextTranslateIndex = toTranslateIndex(clamped, nextLoop);
 
     activeIndexRef.current = clamped;
     setActiveIndex(clamped);
-    translateIndexRef.current = nextTranslateIndex;
-    setTranslateIndex(nextTranslateIndex);
+    setSlidePhase(0);
+    slidePhaseRef.current = 0;
+    setDragOffsetPx(0);
+    dragOffsetRef.current = 0;
+    setIsDragging(false);
+    isDraggingRef.current = false;
     setTransitionEnabled(true);
-  }, [items]);
+  }, [totalCount]);
 
   return {
     loop,
-    displayItems,
-    displayItemsRef,
+    slots,
+    slotsRef,
     activeIndex,
     activeIndexRef,
-    translateIndex,
-    translateIndexRef,
+    slidePhase,
+    slidePhaseRef,
+    dragOffsetPx,
+    isDragging,
+    isSettling,
     transitionEnabled,
     setTransitionEnabled,
     goNext,
@@ -306,6 +461,10 @@ export function useFeedCarousel({
     scrollToIndex,
     scrollToVideoId,
     scrollToUrl,
+    handleDragStart,
+    handleDragMove,
+    handleDragEnd,
+    handleDragCancel,
     handleTrackTransitionEnd,
   };
 }

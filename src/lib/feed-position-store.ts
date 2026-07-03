@@ -45,14 +45,26 @@ class FeedPositionStore {
     return this.cache.get(getFeedFingerprint(items));
   }
 
+  getForCatalog(catalogId: string) {
+    this.hydrate();
+    if (!catalogId) return undefined;
+    return this.cache.get(catalogId);
+  }
+
   save(items: FeedItem[], index: number) {
     this.hydrate();
 
     const item = items[index];
     if (!item) return;
 
-    const feedKey = getFeedFingerprint(items);
-    this.cache.set(feedKey, {
+    this.saveForCatalog(getFeedFingerprint(items), item, index);
+  }
+
+  saveForCatalog(catalogId: string, item: FeedItem, index: number) {
+    this.hydrate();
+    if (!catalogId) return;
+
+    this.cache.set(catalogId, {
       videoId: item.id,
       url: item.url,
       index,

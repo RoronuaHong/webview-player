@@ -150,11 +150,57 @@ html {
   transform-origin: center center;
 }
 
+.feed-track--virtual {
+  position: relative;
+  height: 300dvh;
+  width: 100%;
+  overflow: visible;
+}
+
+.feed-card--slot-prev,
+.feed-card--slot-next {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.feed-card--slot-current {
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.feed-card[data-active="false"] .portrait-player .xgplayer-mobile.xgplayer-playing .gradient {
+  display: none;
+}
+
+/* 相邻槽离屏预加载；滑入视口时由 XgPlayer 直接显示，避免 opacity 切换闪烁 */
+.feed-card[data-active="false"] .feed-slot-player-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.feed-track--virtual[data-slide="-1"] .feed-card--slot-next {
+  z-index: 3;
+}
+
+.feed-track--virtual[data-slide="1"] .feed-card--slot-prev {
+  z-index: 3;
+}
+
 .feed-track {
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.feed-track--settling,
+.feed-track--dragging {
   will-change: transform;
 }
 
 .feed-track--instant {
+  transition: none !important;
+}
+
+.feed-track--dragging {
   transition: none !important;
 }

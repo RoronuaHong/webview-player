@@ -8,14 +8,26 @@ import { toXgDefinitionList } from "@/lib/feed-utils";
 import { lifecycleManager } from "@/lib/lifecycle-manager";
 import { playbackStore } from "@/lib/playback-store";
 import { playerSettings } from "@/lib/player-settings";
-import { getHlsPlaybackMode, getHlsPlugins } from "@/lib/player-utils";
+import { getHlsPlayerConfig, getHlsPlugins } from "@/lib/player-utils";
+import {
+  applyPlaybackSource,
+  buildPlaybackSourceDescriptor,
+  canHotSwitchSources,
+  isSamePlaybackSource,
+  type PlaybackSourceDescriptor,
+} from "@/lib/player-source";
 import {
   ensurePlayerVideoInline,
   getWebViewVideoAttributes,
+  hasDecodedPreviewFrame,
+  hidePlayerPoster,
+  playerHasPreviewFrame,
+  primePlayerPreviewFrame,
   safePlayerPlay,
   setPlayerVideoPreload,
+  findPlayerVideoElement,
 } from "@/lib/webview-playback";
-import { getWebViewPerformanceProfile } from "@/lib/webview-runtime";
+import { getWebViewPerformanceProfile, type VideoPreloadTier } from "@/lib/webview-runtime";
 import {
   readPlayerVideoOrientation,
   type VideoOrientation,
@@ -27,7 +39,10 @@ export type XgPlayerProps = {
   url: string;
   poster?: string;
   active?: boolean;
+  autoPlay?: boolean;
   enabled?: boolean;
+  primePreview?: boolean;
+  preloadTier?: VideoPreloadTier;
   isLive?: boolean;
   startTime?: number;
   definitions?: VideoDefinition[];
@@ -40,6 +55,7 @@ export type XgPlayerProps = {
   onToggleImmersive?: () => void;
   onVideoOrientation?: (orientation: VideoOrientation) => void;
   onPlaybackError?: (error: unknown) => void;
+  onPlaybackIntentChange?: (playing: boolean) => void;
 };
 
 const HIDDEN_CONTROLS = [
@@ -63,7 +79,10 @@ export default function XgPlayer({
   url,
   poster,
   active = false,
+  autoPlay,
   enabled = true,
+  primePreview = false,
+  preloadTier,
   isLive = false,
   startTime = 0,
   definitions = [],
@@ -76,6 +95,7 @@ export default function XgPlayer({
   onToggleImmersive,
   onVideoOrientation,
   onPlaybackError,
+  onPlaybackIntentChange,
 }: XgPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
@@ -86,16 +106,20 @@ export default function XgPlayer({
   const onDefinitionChangeRef = useRef(onDefinitionChange);
   const onVideoOrientationRef = useRef(onVideoOrientation);
   const onPlaybackErrorRef = useRef(onPlaybackError);
-  const currentDefinitionRef = useRef(
+  const onPlaybackIntentChangeRef = useRef(onPlaybackIntentChange);
+  const currentDefinitionRef = useRef<string | undefined>(
     defaultDefinition ?? definitions[0]?.definition,
   );
   const [player, setPlayer] = useState<Player | null>(null);
-  const [currentDefinition, setCurrentDefinition] = useState(
+  const [currentDefinition, setCurrentDefinition] = useState<string | undefined>(
     defaultDefinition ?? definitions[0]?.definition,
   );
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [recreateToken, setRecreateToken] = useState(0);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressReportRef = useRef(0);
   const perfProfileRef = useRef(getWebViewPerformanceProfile());
+  const activeSourceRef = useRef<PlaybackSourceDescriptor | null>(null);
 
   activeRef.current = active;
   onEndedRef.current = onEnded;
@@ -104,6 +128,11 @@ export default function XgPlayer({
   onDefinitionChangeRef.current = onDefinitionChange;
   onVideoOrientationRef.current = onVideoOrientation;
   onPlaybackErrorRef.current = onPlaybackError;
+  onPlaybackIntentChangeRef.current = onPlaybackIntentChange;
+
+  const wantsAutoPlay = autoPlay ?? active;
+  const wantsAutoPlayRef = useRef(wantsAutoPlay);
+  wantsAutoPlayRef.current = wantsAutoPlay;
 
   const reportVideoOrientation = (instance: Player) => {
     onVideoOrientationRef.current?.(readPlayerVideoOrientation(instance));
@@ -113,10 +142,35 @@ export default function XgPlayer({
     () => JSON.stringify(definitions),
     [definitions],
   );
+  const sourceDescriptor = useMemo(
+    () =>
+      buildPlaybackSourceDescriptor({
+        videoId,
+        url,
+        poster,
+        isLive,
+        definitions,
+        defaultDefinition,
+        startTime,
+      }),
+    [
+      videoId,
+      url,
+      poster,
+      isLive,
+      definitionsKey,
+      defaultDefinition,
+      startTime,
+    ],
+  );
+  const sourceDescriptorRef = useRef(sourceDescriptor);
+  sourceDescriptorRef.current = sourceDescriptor;
 
   const reportProgress = (wasPlaying: boolean, immediate = false) => {
     const instance = playerRef.current;
     if (!instance) return;
+    if (!immediate && !activeRef.current) return;
+    const source = activeSourceRef.current ?? sourceDescriptorRef.current;
 
     const now = Date.now();
     if (
@@ -130,8 +184,8 @@ export default function XgPlayer({
 
     playbackStore.update(
       {
-        videoId,
-        url: String(instance.config?.url ?? url),
+        videoId: source.videoId,
+        url: String(instance.config?.url ?? source.sourceUrl),
         currentTime: instance.currentTime ?? 0,
         duration: instance.duration ?? 0,
         wasPlaying,
@@ -142,6 +196,22 @@ export default function XgPlayer({
     );
   };
 
+  const reportFinalProgress = (instance: Player) => {
+    const source = activeSourceRef.current ?? sourceDescriptorRef.current;
+    playbackStore.update(
+      {
+        videoId: source.videoId,
+        url: String(instance.config?.url ?? source.sourceUrl),
+        currentTime: instance.currentTime ?? 0,
+        duration: instance.duration ?? 0,
+        wasPlaying: !instance.paused,
+        playbackRate: instance.playbackRate,
+        definition: currentDefinitionRef.current,
+      },
+      { immediate: true },
+    );
+  };
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -149,28 +219,28 @@ export default function XgPlayer({
     if (!container) return;
 
     const profile = perfProfileRef.current;
-    const plugins = getHlsPlugins(url);
-    const hlsMode = getHlsPlaybackMode(url);
-    if (hlsMode === "none") {
+    const descriptor = sourceDescriptorRef.current;
+    const saved = playbackStore.get(descriptor.videoId);
+    const savedStartTime =
+      startTime > 0 ? startTime : playbackStore.getStartTime(descriptor.videoId);
+    const initialRate = saved?.playbackRate ?? playerSettings.getPlaybackRate();
+    const plugins = getHlsPlugins(descriptor.playbackUrl);
+    if (descriptor.hlsMode === "none") {
       console.warn(
         "[XgPlayer] HLS is not supported in this WebView:",
-        url,
+        descriptor.playbackUrl,
       );
     }
-    const saved = playbackStore.get(videoId);
-    const savedStartTime =
-      startTime > 0 ? startTime : playbackStore.getStartTime(videoId);
-    const initialRate = saved?.playbackRate ?? playerSettings.getPlaybackRate();
-    const initialDefinition =
-      saved?.definition ?? defaultDefinition ?? definitions[0]?.definition;
+    const hlsConfig = getHlsPlayerConfig();
 
-    currentDefinitionRef.current = initialDefinition;
-    setCurrentDefinition(initialDefinition);
+    activeSourceRef.current = descriptor;
+    currentDefinitionRef.current = descriptor.initialDefinition;
+    setCurrentDefinition(descriptor.initialDefinition);
 
     const instance = new Player({
       el: container,
-      url,
-      poster,
+      url: descriptor.playbackUrl,
+      poster: descriptor.poster,
       width: "100%",
       height: "100%",
       fluid: profile.fluidPlayer,
@@ -182,6 +252,7 @@ export default function XgPlayer({
       marginControls: false,
       presets: [MobilePreset],
       plugins,
+      hls: hlsConfig,
       lang: "zh-cn",
       videoFillMode: "contain",
       rotate: false,
@@ -193,7 +264,7 @@ export default function XgPlayer({
         definitions.length > 0
           ? {
               list: toXgDefinitionList(definitions),
-              defaultDefinition: initialDefinition,
+              defaultDefinition: descriptor.initialDefinition,
             }
           : undefined,
       ignores: [...HIDDEN_CONTROLS],
@@ -203,7 +274,7 @@ export default function XgPlayer({
     instance.playbackRate = initialRate;
     playerRef.current = instance;
     setPlayer(instance);
-    onPlayerInstanceRef.current?.(videoId, instance);
+    onPlayerInstanceRef.current?.(descriptor.videoId, instance);
 
     const onPause = () => {
       reportProgress(false, true);
@@ -216,11 +287,12 @@ export default function XgPlayer({
     };
 
     const onEnded = () => {
+      const source = activeSourceRef.current ?? sourceDescriptorRef.current;
       lifecycleManager.setWasPlaying(false);
       playbackStore.update(
         {
-          videoId,
-          url: String(instance.config?.url ?? url),
+          videoId: source.videoId,
+          url: String(instance.config?.url ?? source.sourceUrl),
           currentTime: 0,
           duration: instance.duration ?? 0,
           wasPlaying: false,
@@ -234,10 +306,23 @@ export default function XgPlayer({
     };
 
     const onTimeUpdate = () => {
+      if (!activeRef.current) return;
       reportProgress(!instance.paused);
     };
 
+    const onWaiting = () => {
+      if (!activeRef.current) return;
+      const video = findPlayerVideoElement(instance);
+      if (video && hasDecodedPreviewFrame(video)) return;
+      setIsBuffering(true);
+    };
+
+    const onPlaying = () => {
+      setIsBuffering(false);
+    };
+
     const onPlay = () => {
+      if (!activeRef.current) return;
       lifecycleManager.setWasPlaying(true);
       reportProgress(true);
     };
@@ -283,6 +368,8 @@ export default function XgPlayer({
     instance.on(Events.PAUSE, onPause);
     instance.on(Events.ENDED, onEnded);
     instance.on(Events.TIME_UPDATE, onTimeUpdate);
+    instance.on(Events.WAITING, onWaiting);
+    instance.on(Events.PLAYING, onPlaying);
     instance.on(Events.DEFINITION_CHANGE, onDefinitionChange);
     instance.on(Events.LOADED_METADATA, onLoadedMetadata);
     instance.on(Events.VIDEO_RESIZE, onVideoResize);
@@ -290,21 +377,30 @@ export default function XgPlayer({
     instance.on(Events.READY, onReady);
     instance.on(Events.ERROR, onError);
 
-    ensurePlayerVideoInline(instance);
+    const resolvedPreload = preloadTier ?? "auto";
+    setPlayerVideoPreload(instance, resolvedPreload);
+    ensurePlayerVideoInline(instance, { preload: resolvedPreload });
     reportVideoOrientation(instance);
 
+    if (primePreview && !activeRef.current) {
+      void primePlayerPreviewFrame(instance, savedStartTime);
+    }
+
     progressTimerRef.current = setInterval(() => {
-      if (!instance.paused) {
-        reportProgress(true);
-      }
+      if (!activeRef.current || instance.paused) return;
+      reportProgress(true);
     }, profile.progressBackupIntervalMs);
 
-    if (activeRef.current && lifecycleManager.getPhase() === "active") {
+    if (
+      activeRef.current &&
+      wantsAutoPlayRef.current &&
+      lifecycleManager.getPhase() === "active"
+    ) {
       void safePlayerPlay(instance);
     }
 
     return () => {
-      reportProgress(!instance.paused, true);
+      reportFinalProgress(instance);
       if (progressTimerRef.current) {
         clearInterval(progressTimerRef.current);
         progressTimerRef.current = null;
@@ -314,6 +410,8 @@ export default function XgPlayer({
       instance.off(Events.PAUSE, onPause);
       instance.off(Events.ENDED, onEnded);
       instance.off(Events.TIME_UPDATE, onTimeUpdate);
+      instance.off(Events.WAITING, onWaiting);
+      instance.off(Events.PLAYING, onPlaying);
       instance.off(Events.DEFINITION_CHANGE, onDefinitionChange);
       instance.off(Events.LOADED_METADATA, onLoadedMetadata);
       instance.off(Events.VIDEO_RESIZE, onVideoResize);
@@ -324,47 +422,158 @@ export default function XgPlayer({
       instance.destroy();
       playerRef.current = null;
       setPlayer(null);
-      onPlayerInstanceRef.current?.(videoId, null);
+      onPlayerInstanceRef.current?.(descriptor.videoId, null);
     };
-  }, [enabled, videoId, url, poster, isLive, definitionsKey, defaultDefinition]);
+  }, [enabled, preloadTier, primePreview, sourceDescriptor.hlsMode, sourceDescriptor.isLive, recreateToken]);
 
   useEffect(() => {
     const instance = playerRef.current;
     if (!instance || !enabled) return;
 
-    setPlayerVideoPreload(instance, active ? "auto" : "metadata");
-  }, [active, enabled]);
+    const previous = activeSourceRef.current;
+    if (isSamePlaybackSource(previous, sourceDescriptor)) return;
 
-  useEffect(() => {
-    const instance = playerRef.current;
-    if (!instance || !enabled) return;
+    if (!previous) {
+      activeSourceRef.current = sourceDescriptor;
+      return;
+    }
 
-    const canPlay =
+    if (!canHotSwitchSources(previous, sourceDescriptor)) {
+      setRecreateToken((current) => current + 1);
+      return;
+    }
+
+    let cancelled = false;
+    reportFinalProgress(instance);
+    setIsBuffering(
       active &&
-      lifecycleManager.getPhase() === "active" &&
-      document.visibilityState === "visible";
+        !playerHasPreviewFrame(instance),
+    );
 
-    if (canPlay) {
+    void applyPlaybackSource(instance, sourceDescriptor, {
+      autoplay:
+        active &&
+        wantsAutoPlayRef.current &&
+        lifecycleManager.getPhase() === "active" &&
+        document.visibilityState === "visible",
+      onReady: () => {
+        ensurePlayerVideoInline(instance);
+        reportVideoOrientation(instance);
+      },
+    }).then((switched) => {
+      if (cancelled) return;
+
+      if (!switched) {
+        setRecreateToken((current) => current + 1);
+        return;
+      }
+
+      activeSourceRef.current = sourceDescriptor;
+      currentDefinitionRef.current = sourceDescriptor.initialDefinition;
+      setCurrentDefinition(sourceDescriptor.initialDefinition);
+      setIsBuffering(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [active, enabled, sourceDescriptor]);
+
+  useEffect(() => {
+    const instance = playerRef.current;
+    if (!instance || !enabled) return;
+
+    const resolvedPreload = preloadTier ?? "auto";
+    setPlayerVideoPreload(instance, resolvedPreload);
+  }, [active, enabled, preloadTier]);
+
+  useEffect(() => {
+    if (!active) setIsBuffering(false);
+  }, [active]);
+
+  useEffect(() => {
+    const instance = playerRef.current;
+    if (!instance || !enabled || active || !primePreview) return;
+
+    let cancelled = false;
+    let rafId = 0;
+    const startAt = playbackStore.getStartTime(videoId);
+
+    const runPrime = () => {
+      if (cancelled || activeRef.current) return;
+      if (sourceDescriptorRef.current.videoId !== videoId) return;
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (cancelled || activeRef.current) return;
+        void primePlayerPreviewFrame(instance, startAt);
+      });
+    };
+
+    instance.on(Events.LOADED_DATA, runPrime);
+    instance.on(Events.CANPLAY, runPrime);
+    instance.on(Events.READY, runPrime);
+    runPrime();
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      instance.off(Events.LOADED_DATA, runPrime);
+      instance.off(Events.CANPLAY, runPrime);
+      instance.off(Events.READY, runPrime);
+    };
+  }, [active, enabled, primePreview, videoId, recreateToken]);
+
+  useEffect(() => {
+    const instance = playerRef.current;
+    if (!instance || !enabled) return;
+    if (activeSourceRef.current?.videoId !== videoId) return;
+
+    const tryPlay = () => {
+      if (
+        !activeRef.current ||
+        !wantsAutoPlayRef.current ||
+        lifecycleManager.getPhase() !== "active" ||
+        document.visibilityState !== "visible"
+      ) {
+        return;
+      }
+
+      const video = findPlayerVideoElement(instance);
+      if (video && hasDecodedPreviewFrame(video)) {
+        hidePlayerPoster(instance);
+        setIsBuffering(false);
+      }
+
       const resumeAt = playbackStore.getStartTime(videoId);
       if (resumeAt > 0 && Math.abs((instance.currentTime ?? 0) - resumeAt) > 0.5) {
         instance.currentTime = resumeAt;
       }
       instance.playbackRate = playerSettings.getPlaybackRate();
       void safePlayerPlay(instance);
-      return;
+    };
+
+    if (active && wantsAutoPlay) {
+      tryPlay();
+      instance.on(Events.CANPLAY, tryPlay);
+      instance.on(Events.LOADED_DATA, tryPlay);
+      return () => {
+        instance.off(Events.CANPLAY, tryPlay);
+        instance.off(Events.LOADED_DATA, tryPlay);
+      };
     }
 
     if (!instance.paused) {
       reportProgress(false, true);
       instance.pause();
     }
-  }, [active, enabled, videoId]);
+  }, [active, autoPlay, enabled, videoId, recreateToken, wantsAutoPlay]);
 
   useEffect(() => {
     if (!enabled) return;
     return lifecycleManager.subscribe(({ phase, shouldResume }) => {
       const instance = playerRef.current;
       if (!instance || !activeRef.current) return;
+      if (activeSourceRef.current?.videoId !== videoId) return;
 
       if (phase !== "active") {
         if (!instance.paused) {
@@ -374,7 +583,7 @@ export default function XgPlayer({
         return;
       }
 
-      if (shouldResume) {
+      if (shouldResume && wantsAutoPlayRef.current) {
         const resumeAt = playbackStore.getStartTime(videoId);
         if (resumeAt > 0) {
           instance.currentTime = resumeAt;
@@ -417,6 +626,15 @@ export default function XgPlayer({
     <div className="portrait-player relative h-full w-full bg-black">
       <div ref={containerRef} className="xgplayer-host h-full w-full" />
 
+      {active && isBuffering ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/20"
+          aria-hidden
+        >
+          <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/25 border-t-white/90" />
+        </div>
+      ) : null}
+
       <CustomControls
         player={player}
         visible={active}
@@ -426,6 +644,9 @@ export default function XgPlayer({
         currentDefinition={currentDefinition}
         onPlaybackRateChange={handlePlaybackRateChange}
         onDefinitionChange={handleDefinitionChange}
+        onPlayStateIntent={(playing) =>
+          onPlaybackIntentChangeRef.current?.(playing)
+        }
       />
     </div>
   );

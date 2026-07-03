@@ -11,6 +11,15 @@ type UseFeedViewportGesturesOptions = {
   viewportRef: React.RefObject<HTMLElement | null>;
   onSwipeNext?: () => void;
   onSwipePrev?: () => void;
+  onDragStart?: () => void;
+  onDragMove?: (payload: { deltaY: number; deltaX: number }) => void;
+  onDragEnd?: (payload: {
+    deltaY: number;
+    deltaX: number;
+    velocityY: number;
+    viewportHeight: number;
+  }) => boolean | void;
+  onDragCancel?: () => void;
   onTap?: () => void;
 };
 
@@ -21,14 +30,26 @@ export function useFeedViewportGestures({
   viewportRef,
   onSwipeNext,
   onSwipePrev,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
+  onDragCancel,
   onTap,
 }: UseFeedViewportGesturesOptions) {
   const onSwipeNextRef = useRef(onSwipeNext);
   const onSwipePrevRef = useRef(onSwipePrev);
+  const onDragStartRef = useRef(onDragStart);
+  const onDragMoveRef = useRef(onDragMove);
+  const onDragEndRef = useRef(onDragEnd);
+  const onDragCancelRef = useRef(onDragCancel);
   const onTapRef = useRef(onTap);
 
   onSwipeNextRef.current = onSwipeNext;
   onSwipePrevRef.current = onSwipePrev;
+  onDragStartRef.current = onDragStart;
+  onDragMoveRef.current = onDragMove;
+  onDragEndRef.current = onDragEnd;
+  onDragCancelRef.current = onDragCancel;
   onTapRef.current = onTap;
 
   useEffect(() => {
@@ -37,6 +58,9 @@ export function useFeedViewportGestures({
 
     let startY = 0;
     let startX = 0;
+    let lastY = 0;
+    let lastMoveAt = 0;
+    let velocityY = 0;
     let tracking = false;
     let startedOnControls = false;
     let movedBeyondTap = false;
@@ -45,6 +69,7 @@ export function useFeedViewportGestures({
       tracking = false;
       startedOnControls = false;
       movedBeyondTap = false;
+      velocityY = 0;
     };
 
     const completeGesture = (deltaY: number, deltaX: number) => {
@@ -82,6 +107,10 @@ export function useFeedViewportGestures({
       movedBeyondTap = false;
       startY = touch.clientY;
       startX = touch.clientX;
+      lastY = touch.clientY;
+      lastMoveAt = performance.now();
+      velocityY = 0;
+      onDragStartRef.current?.();
     };
 
     const onTouchMove = (event: TouchEvent) => {
@@ -92,12 +121,22 @@ export function useFeedViewportGestures({
 
       const deltaY = touch.clientY - startY;
       const deltaX = touch.clientX - startX;
+      const now = performance.now();
+      const elapsed = Math.max(now - lastMoveAt, 1);
+      velocityY = (touch.clientY - lastY) / elapsed;
+      lastY = touch.clientY;
+      lastMoveAt = now;
 
       if (
         Math.abs(deltaY) > TAP_MOVEMENT_THRESHOLD ||
         Math.abs(deltaX) > TAP_MOVEMENT_THRESHOLD
       ) {
         movedBeyondTap = true;
+      }
+
+      if (swipeEnabled && Math.abs(deltaY) > Math.abs(deltaX)) {
+        event.preventDefault();
+        onDragMoveRef.current?.({ deltaY, deltaX });
       }
     };
 
@@ -116,10 +155,18 @@ export function useFeedViewportGestures({
       const deltaY = touch.clientY - startY;
       const deltaX = touch.clientX - startX;
       reset();
+      const handled = onDragEndRef.current?.({
+        deltaY,
+        deltaX,
+        velocityY,
+        viewportHeight: viewport.clientHeight,
+      });
+      if (handled) return;
       completeGesture(deltaY, deltaX);
     };
 
     const onTouchCancel = () => {
+      onDragCancelRef.current?.();
       reset();
     };
 
@@ -134,6 +181,35 @@ export function useFeedViewportGestures({
       movedBeyondTap = false;
       startY = event.clientY;
       startX = event.clientX;
+      lastY = event.clientY;
+      lastMoveAt = performance.now();
+      velocityY = 0;
+      onDragStartRef.current?.();
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return;
+      if (!tracking || startedOnControls) return;
+
+      const deltaY = event.clientY - startY;
+      const deltaX = event.clientX - startX;
+      const now = performance.now();
+      const elapsed = Math.max(now - lastMoveAt, 1);
+      velocityY = (event.clientY - lastY) / elapsed;
+      lastY = event.clientY;
+      lastMoveAt = now;
+
+      if (
+        Math.abs(deltaY) > TAP_MOVEMENT_THRESHOLD ||
+        Math.abs(deltaX) > TAP_MOVEMENT_THRESHOLD
+      ) {
+        movedBeyondTap = true;
+      }
+
+      if (swipeEnabled && Math.abs(deltaY) > Math.abs(deltaX)) {
+        event.preventDefault();
+        onDragMoveRef.current?.({ deltaY, deltaX });
+      }
     };
 
     const onPointerUp = (event: PointerEvent) => {
@@ -147,11 +223,19 @@ export function useFeedViewportGestures({
       const deltaY = event.clientY - startY;
       const deltaX = event.clientX - startX;
       reset();
+      const handled = onDragEndRef.current?.({
+        deltaY,
+        deltaX,
+        velocityY,
+        viewportHeight: viewport.clientHeight,
+      });
+      if (handled) return;
       completeGesture(deltaY, deltaX);
     };
 
     const onPointerCancel = (event: PointerEvent) => {
       if (event.pointerType === "touch") return;
+      onDragCancelRef.current?.();
       reset();
     };
 
@@ -166,12 +250,13 @@ export function useFeedViewportGestures({
       });
       viewport.addEventListener("touchmove", onTouchMove, {
         capture: true,
-        passive: true,
+        passive: false,
       });
       viewport.addEventListener("touchend", onTouchEnd, { capture: true });
       viewport.addEventListener("touchcancel", onTouchCancel, { capture: true });
     } else {
       viewport.addEventListener("pointerdown", onPointerDown, { capture: true });
+      viewport.addEventListener("pointermove", onPointerMove, { capture: true });
       viewport.addEventListener("pointerup", onPointerUp, { capture: true });
       viewport.addEventListener("pointercancel", onPointerCancel, {
         capture: true,
@@ -192,6 +277,9 @@ export function useFeedViewportGestures({
       }
 
       viewport.removeEventListener("pointerdown", onPointerDown, {
+        capture: true,
+      });
+      viewport.removeEventListener("pointermove", onPointerMove, {
         capture: true,
       });
       viewport.removeEventListener("pointerup", onPointerUp, { capture: true });

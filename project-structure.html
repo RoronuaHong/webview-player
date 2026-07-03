@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IMP 项目结构 & 引用关系</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-panel: #161b22;
+    --bg-card: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --teal: #2dd4bf;
+    --col-app: #f97583;
+    --col-comp: #79c0ff;
+    --col-hooks: #d2a8ff;
+    --col-lib: #7ee787;
+    --col-types: #ffa657;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+  header .info { font-size: 12px; color: var(--text-dim); }
+  header .stats { display: flex; gap: 12px; margin-left: auto; }
+  header .stat { font-size: 12px; color: var(--text-dim); }
+  header .stat b { color: var(--accent); }
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+  .btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all .15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Left tree panel */
+  .tree-panel {
+    width: 300px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .tree-panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 12px 16px 8px;
+    position: sticky;
+    top: 0;
+    background: var(--bg-panel);
+    z-index: 1;
+  }
+  .tree-item {
+    padding: 4px 16px 4px 0;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    transition: background .1s;
+  }
+  .tree-item:hover { background: rgba(88,166,255,.1); }
+  .tree-item.selected { background: rgba(88,166,255,.2); color: var(--accent); }
+  .tree-item .indent { display: inline-block; }
+  .tree-icon { width: 16px; text-align: center; font-size: 12px; flex-shrink: 0; }
+  .tree-folder { color: var(--accent); font-weight: 500; }
+  .tree-file { color: var(--text); }
+  .tree-file .tree-icon { color: var(--text-dim); }
+  .badge-count {
+    margin-left: auto;
+    font-size: 10px;
+    background: var(--bg-card);
+    color: var(--text-dim);
+    padding: 1px 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  /* Center graph */
+  .graph-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,.04) 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+  #graph { width: 100%; height: 100%; cursor: grab; }
+  #graph.dragging { cursor: grabbing; }
+  .graph-hint {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(13,17,23,.8);
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    pointer-events: none;
+  }
+  .zoom-controls {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .zoom-btn {
+    width: 32px; height: 32px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .zoom-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* SVG node styles */
+  .node { cursor: pointer; transition: opacity .2s; }
+  .node rect {
+    rx: 6;
+    stroke-width: 1.5;
+    transition: all .2s;
+  }
+  .node:hover rect { stroke-width: 2.5; filter: brightness(1.3); }
+  .node text {
+    font-size: 11px;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    pointer-events: none;
+    user-select: none;
+  }
+  .node.dimmed { opacity: 0.15; }
+  .node.highlighted rect { stroke-width: 3; filter: brightness(1.4) drop-shadow(0 0 6px currentColor); }
+  .edge { fill: none; stroke-width: 1.2; transition: all .2s; }
+  .edge.dimmed { opacity: 0.04; }
+  .edge.highlighted { stroke-width: 2.5; }
+  .edge.outgoing { stroke: var(--green); }
+  .edge.incoming { stroke: var(--orange); }
+  .folder-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    pointer-events: none;
+  }
+
+  /* Right details panel */
+  .details-panel {
+    width: 360px;
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    flex-shrink: 0;
+    padding: 16px;
+  }
+  .details-panel .placeholder {
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: center;
+    margin-top: 40%;
+  }
+  .detail-section { margin-bottom: 18px; }
+  .detail-section h3 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .detail-path {
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+  .detail-folder {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+  .detail-folder .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .dep-list { list-style: none; }
+  .dep-item {
+    padding: 6px 10px;
+    margin-bottom: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: "SF Mono", Consolas, monospace;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all .15s;
+  }
+  .dep-item:hover { border-color: var(--accent); transform: translateX(2px); }
+  .dep-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dep-empty { font-size: 12px; color: var(--text-dim); font-style: italic; }
+  .ext-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ext-tag {
+    font-size: 11px;
+    font-family: "SF Mono", Consolas, monospace;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 3px 8px;
+    border-radius: 4px;
+    color: var(--purple);
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-dim);
+    align-items: center;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>IMP 项目结构 & 引用关系</h1>
+  <div class="info">Next.js 16 · React 19 · xgplayer · Tailwind v4</div>
+  <div class="stats">
+    <span class="stat">文件 <b id="stat-files">0</b></span>
+    <span class="stat">引用 <b id="stat-edges">0</b></span>
+  </div>
+  <div class="toolbar">
+    <button class="btn" id="btn-reset">重置视图</button>
+    <button class="btn" id="btn-highlight-leaves">高亮叶子节点</button>
+  </div>
+  <div class="legend">
+    <span class="legend-item"><span style="color:var(--col-app)">●</span> app</span>
+    <span class="legend-item"><span style="color:var(--col-comp)">●</span> components</span>
+    <span class="legend-item"><span style="color:var(--col-hooks)">●</span> hooks</span>
+    <span class="legend-item"><span style="color:var(--col-lib)">●</span> lib</span>
+    <span class="legend-item"><span style="color:var(--col-types)">●</span> types</span>
+    <span class="legend-item"><span style="color:var(--green)">→</span> 引用(出)</span>
+    <span class="legend-item"><span style="color:var(--orange)">→</span> 被引用(入)</span>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Left: Tree -->
+  <div class="tree-panel">
+    <h2>目录树</h2>
+    <div id="tree"></div>
+  </div>
+
+  <!-- Center: Graph -->
+  <div class="graph-container">
+    <svg id="graph"></svg>
+    <div class="zoom-controls">
+      <button class="zoom-btn" id="zoom-in">+</button>
+      <button class="zoom-btn" id="zoom-out">−</button>
+      <button class="zoom-btn" id="zoom-fit">⊡</button>
+    </div>
+    <div class="graph-hint">拖拽平移 · 滚轮缩放 · 点击节点查看引用</div>
+  </div>
+
+  <!-- Right: Details -->
+  <div class="details-panel" id="details">
+    <div class="placeholder">点击任意文件节点<br>查看引用详情</div>
+  </div>
+</div>
+
+<script>
+// ===== DATA =====
+const files = [
+  // app
+  { id:"app/layout", path:"src/app/layout.tsx", folder:"app", name:"layout.tsx", int:[], ext:["next/font/google"] },
+  { id:"app/page", path:"src/app/page.tsx", folder:"app", name:"page.tsx", int:["lib/feed-catalog","lib/feed-utils"], ext:["next/link"] },
+  { id:"app/player/layout", path:"src/app/player/layout.tsx", folder:"app", name:"player/layout.tsx", int:[], ext:["next"] },
+  { id:"app/player/page", path:"src/app/player/page.tsx", folder:"app", name:"player/page.tsx", int:["lib/feed-catalog"], ext:["react","next/navigation"] },
+  { id:"app/player/PlayerContent", path:"src/app/player/PlayerContent.tsx", folder:"app", name:"player/PlayerContent.tsx", int:["components/FeedPlayer","lib/feed-utils","types/feed"], ext:["react","next/navigation"] },
+  // components
+  { id:"components/CustomControls", path:"src/components/CustomControls.tsx", folder:"components", name:"CustomControls.tsx", int:["lib/player-utils","lib/player-definition","lib/pointer-utils","lib/player-settings","lib/webview-playback","types/feed"], ext:["react","xgplayer"] },
+  { id:"components/XgPlayer", path:"src/components/XgPlayer.tsx", folder:"components", name:"XgPlayer.tsx", int:["components/CustomControls","lib/feed-utils","lib/lifecycle-manager","lib/playback-store","lib/player-settings","lib/player-utils","lib/webview-runtime","types/feed"], ext:["react","xgplayer"] },
+  { id:"components/FeedPlayer", path:"src/components/FeedPlayer.tsx", folder:"components", name:"FeedPlayer.tsx", int:["components/XgPlayer","hooks/useFeedBridge","hooks/useFeedCarousel","hooks/useFeedRestoreAndUrlSync","hooks/useFeedSession","hooks/useFeedViewportGestures","hooks/useImmersivePlayerLayout","lib/playback-store","lib/webview-playback","lib/webview-runtime","types/feed"], ext:["react","xgplayer"] },
+  // hooks
+  { id:"hooks/useFeedBridge", path:"src/hooks/useFeedBridge.ts", folder:"hooks", name:"useFeedBridge.ts", int:["lib/feed-utils","lib/jsbridge","lib/lifecycle-manager","lib/player-definition","lib/playback-store","lib/player-settings","lib/webview-playback","types/feed"], ext:["react","xgplayer"] },
+  { id:"hooks/useFeedCarousel", path:"src/hooks/useFeedCarousel.ts", folder:"hooks", name:"useFeedCarousel.ts", int:["lib/feed-carousel","types/feed"], ext:["react"] },
+  { id:"hooks/useFeedCatalog", path:"src/hooks/useFeedCatalog.ts", folder:"hooks", name:"useFeedCatalog.ts", int:["lib/jsbridge","lib/feed-catalog-state","types/feed"], ext:["react"] },
+  { id:"hooks/useFeedRestoreAndUrlSync", path:"src/hooks/useFeedRestoreAndUrlSync.ts", folder:"hooks", name:"useFeedRestoreAndUrlSync.ts", int:["lib/feed-utils","types/feed"], ext:["react"] },
+  { id:"hooks/useFeedSession", path:"src/hooks/useFeedSession.ts", folder:"hooks", name:"useFeedSession.ts", int:["lib/jsbridge","lib/feed-position-store","lib/feed-utils","lib/lifecycle-manager","lib/playback-store","types/feed"], ext:["react","xgplayer"] },
+  { id:"hooks/useFeedViewportGestures", path:"src/hooks/useFeedViewportGestures.ts", folder:"hooks", name:"useFeedViewportGestures.ts", int:["lib/pointer-utils"], ext:["react"] },
+  { id:"hooks/useImmersivePlayerLayout", path:"src/hooks/useImmersivePlayerLayout.ts", folder:"hooks", name:"useImmersivePlayerLayout.ts", int:["lib/video-orientation","lib/webview-runtime"], ext:["react","xgplayer"] },
+  // lib
+  { id:"lib/feed-carousel", path:"src/lib/feed-carousel.ts", folder:"lib", name:"feed-carousel.ts", int:["types/feed","lib/webview-runtime"], ext:[] },
+  { id:"lib/feed-catalog-state", path:"src/lib/feed-catalog-state.ts", folder:"lib", name:"feed-catalog-state.ts", int:["lib/feed-position-store","types/feed"], ext:[] },
+  { id:"lib/feed-catalog", path:"src/lib/feed-catalog.ts", folder:"lib", name:"feed-catalog.ts", int:["types/feed","lib/playback-store"], ext:["node:fs","node:path"] },
+  { id:"lib/feed-position-store", path:"src/lib/feed-position-store.ts", folder:"lib", name:"feed-position-store.ts", int:["types/feed"], ext:[] },
+  { id:"lib/feed-utils", path:"src/lib/feed-utils.ts", folder:"lib", name:"feed-utils.ts", int:["types/feed","lib/feed-position-store","lib/playback-store"], ext:[] },
+  { id:"lib/immersive-viewport", path:"src/lib/immersive-viewport.ts", folder:"lib", name:"immersive-viewport.ts", int:["lib/webview-runtime"], ext:[] },
+  { id:"lib/jsbridge", path:"src/lib/jsbridge.ts", folder:"lib", name:"jsbridge.ts", int:[], ext:[] },
+  { id:"lib/lifecycle-manager", path:"src/lib/lifecycle-manager.ts", folder:"lib", name:"lifecycle-manager.ts", int:["lib/jsbridge","lib/playback-store","types/feed"], ext:[] },
+  { id:"lib/playback-store", path:"src/lib/playback-store.ts", folder:"lib", name:"playback-store.ts", int:["types/feed"], ext:[] },
+  { id:"lib/player-definition", path:"src/lib/player-definition.ts", folder:"lib", name:"player-definition.ts", int:["lib/webview-playback","types/feed"], ext:["xgplayer"] },
+  { id:"lib/player-settings", path:"src/lib/player-settings.ts", folder:"lib", name:"player-settings.ts", int:["types/feed"], ext:[] },
+  { id:"lib/player-source", path:"src/lib/player-source.ts", folder:"lib", name:"player-source.ts", int:["lib/playback-store","lib/player-settings","lib/webview-playback","types/feed"], ext:["xgplayer"] },
+  { id:"lib/player-utils", path:"src/lib/player-utils.ts", folder:"lib", name:"player-utils.ts", int:["lib/webview-runtime","types/feed"], ext:["xgplayer-hls"] },
+  { id:"lib/pointer-utils", path:"src/lib/pointer-utils.ts", folder:"lib", name:"pointer-utils.ts", int:[], ext:[] },
+  { id:"lib/video-orientation", path:"src/lib/video-orientation.ts", folder:"lib", name:"video-orientation.ts", int:["lib/webview-playback"], ext:["xgplayer"] },
+  { id:"lib/webview-playback", path:"src/lib/webview-playback.ts", folder:"lib", name:"webview-playback.ts", int:["lib/lifecycle-manager"], ext:["xgplayer"] },
+  { id:"lib/webview-runtime", path:"src/lib/webview-runtime.ts", folder:"lib", name:"webview-runtime.ts", int:[], ext:[] },
+  // types
+  { id:"types/feed", path:"src/types/feed.ts", folder:"types", name:"feed.ts", int:[], ext:[] },
+];
+
+const folderColors = {
+  app: "#f97583", components: "#79c0ff", hooks: "#d2a8ff",
+  lib: "#7ee787", types: "#ffa657"
+};
+const folderOrder = ["app","components","hooks","lib","types"];
+
+// Build reverse dependency map
+const reverseDeps = {};
+files.forEach(f => { reverseDeps[f.id] = []; });
+files.forEach(f => {
+  f.int.forEach(dep => {
+    if (reverseDeps[dep]) reverseDeps[dep].push(f.id);
+  });
+});
+
+// Count edges
+let edgeCount = 0;
+files.forEach(f => edgeCount += f.int.length);
+document.getElementById("stat-files").textContent = files.length;
+document.getElementById("stat-edges").textContent = edgeCount;
+
+// ===== LAYOUT =====
+const COL_W = 240;
+const NODE_H = 34;
+const NODE_W = 180;
+const NODE_GAP = 8;
+const COL_GAP = 60;
+const TOP_PAD = 50;
+
+const folderFiles = {};
+folderOrder.forEach(f => folderFiles[f] = []);
+files.forEach(f => folderFiles[f.folder].push(f));
+
+const positions = {};
+let maxH = 0;
+folderOrder.forEach((folder, ci) => {
+  const fs = folderFiles[folder];
+  fs.forEach((f, fi) => {
+    positions[f.id] = {
+      x: ci * (NODE_W + COL_GAP) + 40,
+      y: TOP_PAD + fi * (NODE_H + NODE_GAP)
+    };
+  });
+  const h = TOP_PAD + fs.length * (NODE_H + NODE_GAP);
+  if (h > maxH) maxH = h;
+});
+
+const graphW = folderOrder.length * (NODE_W + COL_GAP) + 80;
+const graphH = maxH + 40;
+
+// ===== SVG SETUP =====
+const svg = document.getElementById("graph");
+svg.setAttribute("viewBox", `0 0 ${graphW} ${graphH}`);
+svg.setAttribute("width", graphW);
+svg.setAttribute("height", graphH);
+
+let scale = 1, panX = 0, panY = 0;
+
+function applyTransform() {
+  svg.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  svg.style.transformOrigin = "0 0";
+}
+
+// Pan
+let isDragging = false, dragStartX, dragStartY, startPanX, startPanY;
+const container = document.querySelector(".graph-container");
+container.addEventListener("mousedown", e => {
+  if (e.target.tagName === "rect" || e.target.tagName === "text" || e.target.closest(".node")) return;
+  isDragging = true;
+  svg.classList.add("dragging");
+  dragStartX = e.clientX; dragStartY = e.clientY;
+  startPanX = panX; startPanY = panY;
+});
+window.addEventListener("mousemove", e => {
+  if (!isDragging) return;
+  panX = startPanX + (e.clientX - dragStartX);
+  panY = startPanY + (e.clientY - dragStartY);
+  applyTransform();
+});
+window.addEventListener("mouseup", () => {
+  isDragging = false;
+  svg.classList.remove("dragging");
+});
+
+// Zoom
+container.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = container.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  const newScale = Math.max(0.2, Math.min(3, scale * delta));
+  panX = mx - (mx - panX) * (newScale / scale);
+  panY = my - (my - panY) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, { passive: false });
+
+function fitView() {
+  const rect = container.getBoundingClientRect();
+  scale = Math.min(rect.width / graphW, rect.height / graphH) * 0.95;
+  scale = Math.max(0.3, Math.min(1.5, scale));
+  panX = (rect.width - graphW * scale) / 2;
+  panY = (rect.height - graphH * scale) / 2;
+  if (panY < 0) panY = 10;
+  applyTransform();
+}
+
+document.getElementById("zoom-in").onclick = () => { scale = Math.min(3, scale * 1.2); applyTransform(); };
+document.getElementById("zoom-out").onclick = () => { scale = Math.max(0.2, scale / 1.2); applyTransform(); };
+document.getElementById("zoom-fit").onclick = fitView;
+document.getElementById("btn-reset").onclick = () => {
+  selectedId = null;
+  renderGraph();
+  renderDetails(null);
+  document.querySelectorAll(".tree-item").forEach(el => el.classList.remove("selected"));
+};
+
+// ===== RENDER GRAPH =====
+const svgNS = "http://www.w3.org/2000/svg";
+let selectedId = null;
+
+function createEl(tag, attrs) {
+  const el = document.createElementNS(svgNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+// Defs for arrow markers
+const defs = createEl("defs", {});
+["green","orange","gray"].forEach(color => {
+  const marker = createEl("marker", {
+    id: `arrow-${color}`,
+    viewBox: "0 0 10 10", refX: 9, refY: 5,
+    markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse"
+  });
+  const colorMap = { green: "#3fb950", orange: "#d29922", gray: "#30363d" };
+  marker.appendChild(createEl("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: colorMap[color] }));
+  defs.appendChild(marker);
+});
+svg.appendChild(defs);
+
+// Folder labels
+folderOrder.forEach((folder, ci) => {
+  const x = ci * (NODE_W + COL_GAP) + 40 + NODE_W / 2;
+  const label = createEl("text", {
+    x, y: 28, "text-anchor": "middle",
+    fill: folderColors[folder], class: "folder-label"
+  });
+  label.textContent = folder + "/ (" + folderFiles[folder].length + ")";
+  svg.appendChild(label);
+});
+
+// Edges layer
+const edgesLayer = createEl("g", { id: "edges" });
+svg.appendChild(edgesLayer);
+
+// Nodes layer
+const nodesLayer = createEl("g", { id: "nodes" });
+svg.appendChild(nodesLayer);
+
+const edgeElements = [];
+const nodeElements = {};
+
+function renderGraph() {
+  edgesLayer.innerHTML = "";
+  nodesLayer.innerHTML = "";
+  edgeElements.length = 0;
+  Object.keys(nodeElements).forEach(k => delete nodeElements[k]);
+
+  // Draw edges
+  files.forEach(f => {
+    f.int.forEach(depId => {
+      if (!positions[depId] || !positions[f.id]) return;
+      const from = positions[f.id];
+      const to = positions[depId];
+      const x1 = from.x + NODE_W;  // right edge of importer
+      const y1 = from.y + NODE_H / 2;
+      const x2 = to.x;  // left edge of imported
+      const y2 = to.y + NODE_H / 2;
+      const mx = (x1 + x2) / 2;
+      const path = createEl("path", {
+        d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
+        class: "edge", stroke: "#30363d",
+        "marker-end": "url(#arrow-gray)"
+      });
+      path.dataset.from = f.id;
+      path.dataset.to = depId;
+      edgesLayer.appendChild(path);
+      edgeElements.push(path);
+    });
+  });
+
+  // Draw nodes
+  files.forEach(f => {
+    const pos = positions[f.id];
+    const g = createEl("g", { class: "node", "data-id": f.id });
+    g.setAttribute("transform", `translate(${pos.x}, ${pos.y})`);
+
+    const color = folderColors[f.folder];
+    const rect = createEl("rect", {
+      width: NODE_W, height: NODE_H,
+      fill: "rgba(28,35,48,.95)", stroke: color, rx: 6
+    });
+    g.appendChild(rect);
+
+    // Left color bar
+    g.appendChild(createEl("rect", {
+      x: 0, y: 0, width: 4, height: NODE_H,
+      fill: color, rx: 2
+    }));
+
+    const text = createEl("text", {
+      x: 12, y: NODE_H / 2 + 4, fill: "#e6edf3"
+    });
+    text.textContent = f.name.length > 24 ? f.name.slice(0, 22) + "…" : f.name;
+    g.appendChild(text);
+
+    // Dependency count badge
+    const totalDeps = f.int.length + reverseDeps[f.id].length;
+    if (totalDeps > 0) {
+      const badge = createEl("text", {
+        x: NODE_W - 10, y: NODE_H / 2 + 4,
+        "text-anchor": "end", fill: "#8b949e", "font-size": "10"
+      });
+      badge.textContent = `${f.int.length}↓ ${reverseDeps[f.id].length}↑`;
+      g.appendChild(badge);
+    }
+
+    g.addEventListener("click", e => {
+      e.stopPropagation();
+      selectNode(f.id);
+    });
+
+    nodesLayer.appendChild(g);
+    nodeElements[f.id] = g;
+  });
+
+  applyHighlight();
+}
+
+function selectNode(id) {
+  selectedId = (selectedId === id) ? null : id;
+  renderGraph();
+  renderDetails(selectedId);
+  // Sync tree
+  document.querySelectorAll(".tree-item").forEach(el => {
+    el.classList.toggle("selected", el.dataset.id === selectedId);
+  });
+  if (selectedId) {
+    const treeEl = document.querySelector(`.tree-item[data-id="${selectedId}"]`);
+    if (treeEl) treeEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+}
+
+function applyHighlight() {
+  if (!selectedId) {
+    nodeElements && Object.values(nodeElements).forEach(n => n.classList.remove("dimmed","highlighted"));
+    edgeElements.forEach(e => { e.classList.remove("dimmed","highlighted","outgoing","incoming"); e.setAttribute("stroke","#30363d"); e.setAttribute("marker-end","url(#arrow-gray)"); });
+    return;
+  }
+
+  const outgoing = new Set(files.find(f => f.id === selectedId).int);
+  const incoming = new Set(reverseDeps[selectedId]);
+  const connected = new Set([selectedId, ...outgoing, ...incoming]);
+
+  Object.entries(nodeElements).forEach(([id, node]) => {
+    if (id === selectedId) {
+      node.classList.add("highlighted");
+      node.classList.remove("dimmed");
+    } else if (connected.has(id)) {
+      node.classList.remove("dimmed","highlighted");
+    } else {
+      node.classList.add("dimmed");
+      node.classList.remove("highlighted");
+    }
+  });
+
+  edgeElements.forEach(edge => {
+    const from = edge.dataset.from, to = edge.dataset.to;
+    if (from === selectedId && outgoing.has(to)) {
+      edge.classList.add("highlighted","outgoing");
+      edge.classList.remove("dimmed");
+      edge.setAttribute("stroke","#3fb950");
+      edge.setAttribute("marker-end","url(#arrow-green)");
+    } else if (to === selectedId && incoming.has(from)) {
+      edge.classList.add("highlighted","incoming");
+      edge.classList.remove("dimmed");
+      edge.setAttribute("stroke","#d29922");
+      edge.setAttribute("marker-end","url(#arrow-orange)");
+    } else {
+      edge.classList.add("dimmed");
+      edge.classList.remove("highlighted","outgoing","incoming");
+      edge.setAttribute("stroke","#30363d");
+      edge.setAttribute("marker-end","url(#arrow-gray)");
+    }
+  });
+}
+
+// ===== RENDER TREE =====
+function renderTree() {
+  const tree = document.getElementById("tree");
+  tree.innerHTML = "";
+
+  // Root
+  const root = makeTreeItem("📁 new/", "root", 0, true);
+  tree.appendChild(root);
+
+  // src/
+  const src = makeTreeItem("📁 src/", "src", 1, true);
+  tree.appendChild(src);
+
+  folderOrder.forEach(folder => {
+    const folderEl = makeTreeItem(`📁 ${folder}/ (${folderFiles[folder].length})`, `folder-${folder}`, 2, true, folderColors[folder]);
+    tree.appendChild(folderEl);
+    folderFiles[folder].forEach(f => {
+      const icon = f.folder === "types" ? "📐" : f.folder === "app" ? "📄" : f.folder === "components" ? "🧩" : f.folder === "hooks" ? "🪝" : "📚";
+      const el = makeTreeItem(`${icon} ${f.name}`, f.id, 3, false);
+      const badge = document.createElement("span");
+      badge.className = "badge-count";
+      const deps = f.int.length + reverseDeps[f.id].length;
+      badge.textContent = deps;
+      if (deps === 0) badge.style.opacity = "0.3";
+      el.appendChild(badge);
+      tree.appendChild(el);
+    });
+  });
+
+  // Other dirs
+  ["📁 docs/","📁 public/","📄 package.json","📄 next.config.ts","📄 tsconfig.json"].forEach(label => {
+    const el = makeTreeItem(label, "other-" + label, 1, false);
+    el.style.opacity = "0.5";
+    tree.appendChild(el);
+  });
+}
+
+function makeTreeItem(label, id, depth, isFolder, color) {
+  const div = document.createElement("div");
+  div.className = "tree-item " + (isFolder ? "tree-folder" : "tree-file");
+  div.dataset.id = id;
+  div.style.paddingLeft = (16 + depth * 14) + "px";
+  if (color) div.style.color = color;
+  div.textContent = label;
+  if (!isFolder && id.startsWith("app/") || !isFolder && id.startsWith("components/") || !isFolder && id.startsWith("hooks/") || !isFolder && id.startsWith("lib/") || !isFolder && id.startsWith("types/")) {
+    div.addEventListener("click", () => selectNode(id));
+  }
+  return div;
+}
+
+// ===== RENDER DETAILS =====
+function renderDetails(id) {
+  const panel = document.getElementById("details");
+  if (!id) {
+    panel.innerHTML = '<div class="placeholder">点击任意文件节点<br>查看引用详情</div>';
+    return;
+  }
+  const f = files.find(x => x.id === id);
+  if (!f) return;
+  const incoming = reverseDeps[id];
+
+  const depColor = d => folderColors[files.find(x => x.id === d)?.folder] || "#888";
+
+  let html = `
+    <div class="detail-path">${f.path}</div>
+    <div class="detail-folder"><span class="pill" style="background:${folderColors[f.folder]}22;color:${folderColors[f.folder]}">${f.folder}/</span></div>
+
+    <div class="detail-section">
+      <h3>📤 引用 (依赖 ${f.int.length} 个文件)</h3>
+      ${f.int.length === 0 ? '<div class="dep-empty">无内部引用（叶子节点）</div>' :
+        `<ul class="dep-list">${f.int.map(d => {
+          const dep = files.find(x => x.id === d);
+          return `<li class="dep-item" data-id="${d}"><span class="dot" style="background:${depColor(d)}"></span>${dep ? dep.name : d}</li>`;
+        }).join("")}</ul>`}
+    </div>
+
+    <div class="detail-section">
+      <h3>📥 被引用 (被 ${incoming.length} 个文件引用)</h3>
+      ${incoming.length === 0 ? '<div class="dep-empty">无文件引用此模块</div>' :
+        `<ul class="dep-list">${incoming.map(d => {
+          const dep = files.find(x => x.id === d);
+          return `<li class="dep-item" data-id="${d}"><span class="dot" style="background:${depColor(d)}"></span>${dep ? dep.name : d}</li>`;
+        }).join("")}</ul>`}
+    </div>
+
+    <div class="detail-section">
+      <h3>📦 外部依赖</h3>
+      ${f.ext.length === 0 ? '<div class="dep-empty">无外部依赖</div>' :
+        `<div class="ext-list">${f.ext.map(e => `<span class="ext-tag">${e}</span>`).join("")}</div>`}
+    </div>
+  `;
+  panel.innerHTML = html;
+
+  // Click dep items to navigate
+  panel.querySelectorAll(".dep-item").forEach(el => {
+    el.addEventListener("click", () => selectNode(el.dataset.id));
+  });
+}
+
+// Highlight leaves button
+document.getElementById("btn-highlight-leaves").addEventListener("click", function() {
+  const isOn = this.classList.toggle("active");
+  if (!isOn) {
+    renderGraph();
+    return;
+  }
+  selectedId = null;
+  const leaves = files.filter(f => f.int.length === 0).map(f => f.id);
+  Object.entries(nodeElements).forEach(([id, node]) => {
+    if (leaves.includes(id)) {
+      node.classList.remove("dimmed");
+      node.classList.add("highlighted");
+    } else {
+      node.classList.add("dimmed");
+      node.classList.remove("highlighted");
+    }
+  });
+  edgeElements.forEach(e => e.classList.add("dimmed"));
+});
+
+// ===== INIT =====
+renderTree();
+renderGraph();
+setTimeout(fitView, 50);
+</script>
+</body>
+</html>

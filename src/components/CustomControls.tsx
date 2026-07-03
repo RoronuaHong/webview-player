@@ -19,6 +19,7 @@ type CustomControlsProps = {
   currentDefinition?: string;
   onDefinitionChange?: (definition: VideoDefinition) => void;
   onPlaybackRateChange?: (rate: PlaybackRate) => void;
+  onPlayStateIntent?: (playing: boolean) => void;
 };
 
 export default function CustomControls({
@@ -30,6 +31,7 @@ export default function CustomControls({
   currentDefinition,
   onDefinitionChange,
   onPlaybackRateChange,
+  onPlayStateIntent,
 }: CustomControlsProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -144,8 +146,10 @@ export default function CustomControls({
     if (!player) return;
     resetHideTimer();
     if (player.paused) {
+      onPlayStateIntent?.(true);
       void safePlayerPlay(player);
     } else {
+      onPlayStateIntent?.(false);
       player.pause();
     }
   };

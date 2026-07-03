@@ -214,10 +214,13 @@ const FEED_POSITION_PARAM_KEYS = [
   "target_url",
 ] as const;
 
-export function syncFeedPositionToUrl(items: FeedItem[], index: number) {
+export function syncFeedPositionToUrl(
+  itemOrItems: FeedItem | FeedItem[],
+  index: number,
+) {
   if (typeof window === "undefined") return;
 
-  const item = items[index];
+  const item = Array.isArray(itemOrItems) ? itemOrItems[index] : itemOrItems;
   if (!item) return;
 
   const params = new URLSearchParams(window.location.search);

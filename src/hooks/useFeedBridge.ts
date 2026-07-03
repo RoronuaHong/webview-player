@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type Player from "xgplayer";
 import { findDefinition, findFeedItemIndex, toXgDefinitionList } from "@/lib/feed-utils";
+import type { FeedCatalogSnapshot } from "@/lib/feed-catalog-state";
 import { PlayerBridge } from "@/lib/jsbridge";
 import { lifecycleManager } from "@/lib/lifecycle-manager";
 import { changePlayerDefinition } from "@/lib/player-definition";
@@ -26,11 +27,25 @@ type UseFeedBridgeOptions = {
   scrollToVideoId: (videoId: string) => number;
   scrollToUrl: (url: string) => number;
   saveActiveProgress: (immediate?: boolean) => void;
+  getFeedCatalogSnapshot?: () => FeedCatalogSnapshot;
+  setFeedCatalog?: (options: {
+    catalogId?: string;
+    totalCount?: number;
+    reset?: boolean;
+    items?: FeedItem[];
+    offset?: number;
+  }) => void;
+  appendFeedItems?: (offset: number, items: FeedItem[]) => void;
+  findLoadedIndex?: (options: {
+    videoId?: string | null;
+    url?: string | null;
+  }) => number;
   onDefinitionChange?: (
     videoId: string,
     index: number,
     definition: VideoDefinition,
   ) => void;
+  setPlaybackIntent?: (playing: boolean) => void;
 };
 
 export function useFeedBridge({
@@ -48,10 +63,17 @@ export function useFeedBridge({
   scrollToVideoId,
   scrollToUrl,
   saveActiveProgress,
+  getFeedCatalogSnapshot,
+  setFeedCatalog,
+  appendFeedItems,
+  findLoadedIndex,
   onDefinitionChange,
+  setPlaybackIntent,
 }: UseFeedBridgeOptions) {
   const onDefinitionChangeRef = useRef(onDefinitionChange);
   onDefinitionChangeRef.current = onDefinitionChange;
+  const setPlaybackIntentRef = useRef(setPlaybackIntent);
+  setPlaybackIntentRef.current = setPlaybackIntent;
 
   const getItemDefinitions = useCallback(
     (videoId?: string) => {
@@ -122,18 +144,22 @@ export function useFeedBridge({
     bridgeRef.current = bridge;
 
     bridge.register("play", () => {
+      setPlaybackIntentRef.current?.(true);
       void safePlayerPlay(getActivePlayer());
     });
     bridge.register("pause", () => {
       saveActiveProgress(true);
+      setPlaybackIntentRef.current?.(false);
       getActivePlayer()?.pause();
     });
     bridge.register("togglePlay", () => {
       const player = getActivePlayer();
       if (!player) return;
       if (player.paused) {
+        setPlaybackIntentRef.current?.(true);
         void safePlayerPlay(player);
       } else {
+        setPlaybackIntentRef.current?.(false);
         player.pause();
       }
     });
@@ -167,17 +193,57 @@ export function useFeedBridge({
     });
     bridge.register("getIndexByVideoId", (data) => {
       const videoId = typeof data?.videoId === "string" ? data.videoId : "";
-      const index = findFeedItemIndex(itemsRef.current ?? [], { videoId });
+      const index =
+        findLoadedIndex?.({ videoId }) ??
+        findFeedItemIndex(itemsRef.current ?? [], { videoId });
       return { index, videoId, found: index >= 0 };
     });
     bridge.register("getIndexByUrl", (data) => {
       const url = typeof data?.url === "string" ? data.url : "";
-      const index = findFeedItemIndex(itemsRef.current ?? [], { url });
+      const index =
+        findLoadedIndex?.({ url }) ??
+        findFeedItemIndex(itemsRef.current ?? [], { url });
       return { index, url, found: index >= 0 };
     });
     bridge.register("getFeedCatalog", () => ({
+      ...(getFeedCatalogSnapshot?.() ?? {}),
       items: buildFeedCatalog(),
     }));
+    bridge.register("setFeedCatalog", (data) => {
+      if (!setFeedCatalog) {
+        throw new Error("Paged feed catalog is not available");
+      }
+
+      const records = Array.isArray(data?.items)
+        ? (data.items as FeedItem[])
+        : undefined;
+      setFeedCatalog({
+        catalogId:
+          typeof data?.catalogId === "string" ? data.catalogId : undefined,
+        totalCount:
+          typeof data?.totalCount === "number" ? data.totalCount : undefined,
+        reset: data?.reset !== false,
+        offset:
+          typeof data?.offset === "number" ? data.offset : undefined,
+        items: records,
+      });
+
+      return getFeedCatalogSnapshot?.();
+    });
+    bridge.register("appendFeedItems", (data) => {
+      if (!appendFeedItems) {
+        throw new Error("Paged feed catalog is not available");
+      }
+
+      const offset = Number(data?.offset);
+      const records = data?.items;
+      if (!Number.isFinite(offset) || !Array.isArray(records)) {
+        throw new Error("offset and items are required");
+      }
+
+      appendFeedItems(offset, records as FeedItem[]);
+      return getFeedCatalogSnapshot?.();
+    });
     bridge.register("getActiveIndex", () => ({
       index: activeIndexRef.current,
       videoId: getActiveItem()?.id,
@@ -271,6 +337,10 @@ export function useFeedBridge({
     getActiveItem,
     getActivePlayer,
     getItemDefinitions,
+    getFeedCatalogSnapshot,
+    setFeedCatalog,
+    appendFeedItems,
+    findLoadedIndex,
     itemsRef,
     playersRef,
     saveActiveProgress,

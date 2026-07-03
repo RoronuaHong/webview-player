@@ -1,4 +1,6 @@
 import HlsPlugin from "xgplayer-hls";
+import { isMobileWebView } from "@/lib/webview-runtime";
+import type { VideoDefinition } from "@/types/feed";
 
 /** 本地示例视频，避免外链过期 */
 export const PORTRAIT_VIDEO_1080_URL = "/videos/sample-720p.mp4";
@@ -49,6 +51,94 @@ export function getHlsPlaybackMode(url: string): "native" | "hls.js" | "mp4" | "
   if (supportsNativeHls()) return "native";
   if (HlsPlugin.isSupported()) return "hls.js";
   return "none";
+}
+
+function parseDefinitionBitrate(definition: string): number {
+  const match = definition.match(/(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+}
+
+export function pickLowestDefinition(
+  definitions: VideoDefinition[],
+): VideoDefinition | undefined {
+  if (!definitions.length) return undefined;
+
+  return [...definitions].sort(
+    (left, right) =>
+      parseDefinitionBitrate(left.definition) -
+      parseDefinitionBitrate(right.definition),
+  )[0];
+}
+
+export function resolveInitialDefinition(
+  definitions: VideoDefinition[],
+  options?: {
+    savedDefinition?: string;
+    defaultDefinition?: string;
+    preferLowOnMobile?: boolean;
+  },
+): string | undefined {
+  if (!definitions.length) return undefined;
+
+  const savedDefinition = options?.savedDefinition;
+  if (
+    savedDefinition &&
+    definitions.some((item) => item.definition === savedDefinition)
+  ) {
+    return savedDefinition;
+  }
+
+  const preferLow =
+    options?.preferLowOnMobile !== false && isMobileWebView();
+  if (preferLow) {
+    return pickLowestDefinition(definitions)?.definition;
+  }
+
+  const defaultDefinition = options?.defaultDefinition;
+  if (
+    defaultDefinition &&
+    definitions.some((item) => item.definition === defaultDefinition)
+  ) {
+    return defaultDefinition;
+  }
+
+  return definitions[0]?.definition;
+}
+
+export function resolvePlaybackUrl(
+  url: string,
+  definitions: VideoDefinition[],
+  definitionName?: string,
+): string {
+  if (!definitions.length || !definitionName) return url;
+
+  const matched = definitions.find(
+    (item) => item.definition === definitionName,
+  );
+  return matched?.url ?? url;
+}
+
+/** Android WebView MSE HLS: faster first frame, smaller buffer footprint */
+export function getHlsPlayerConfig():
+  | {
+      preloadTime: number;
+      minSegmentsStartPlay: number;
+      bufferBehind: number;
+      loadTimeout: number;
+      manifestLoadTimeout: number;
+    }
+  | undefined {
+  if (supportsNativeHls() || !HlsPlugin.isSupported()) {
+    return undefined;
+  }
+
+  return {
+    preloadTime: 15,
+    minSegmentsStartPlay: 1,
+    bufferBehind: 8,
+    loadTimeout: 15000,
+    manifestLoadTimeout: 10000,
+  };
 }
 
 export function formatTime(seconds: number): string {
